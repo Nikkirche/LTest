@@ -1,5 +1,4 @@
 #pragma once
-#include <signal.h>
 #include <valgrind/memcheck.h>
 
 #include <boost/context/detail/fcontext.hpp>
@@ -9,7 +8,6 @@
 #include "value_wrapper.h"
 #include <functional>
 #include <memory>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
