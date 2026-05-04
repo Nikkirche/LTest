@@ -346,7 +346,6 @@ class DualTestTask final : public CoroBase {
   }
 
   std::shared_ptr<CoroBase> Restart([[maybe_unused]] void* this_ptr) override {
-    return nullptr;
   }
 
   std::vector<std::string> GetStrArgs() const override { return {}; }

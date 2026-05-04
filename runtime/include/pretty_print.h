@@ -25,7 +25,7 @@ struct PrettyPrinter {
 
   template <typename Out_t>
   void PrettyPrint(const std::vector<std::variant<Invoke, Response>>& result,
-                   int threads_num, Out_t& out) {
+                   size_t threads_num, Out_t& out) {
     auto get_thread_num = [](const std::variant<Invoke, Response>& v) {
       if (v.index() == 0) {
         return get<0>(v).thread_id;

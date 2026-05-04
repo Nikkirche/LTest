@@ -44,7 +44,7 @@ FollowUpResponse(result)
 
 - `runtime/include/verifying_macro.h` - `target_method_dual` и awaiter-wrapper.
 - `runtime/include/lincheck_dual.h` - типы дуальной истории и checker.
-- `runtime/include/scheduler.h` - `DualStrategyScheduler`, `DualTLAScheduler`,
+- `runtime/include/scheduler.h` - `DualStrategyScheduler`
   replay, minimization, deadlock handling.
 - `runtime/include/verifying.h` - `SpecDual`, `RunDual`,
   `LTEST_ENTRYPOINT_DUAL`.

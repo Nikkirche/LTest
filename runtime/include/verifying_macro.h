@@ -25,9 +25,9 @@
 namespace ltest {
 extern std::vector<TaskBuilder> task_builders;
 
-inline void LtestFail(const char* expr, const char* file, int line) {
+inline void LtestFail(const char *expr, const char *file, unsigned int line, const char* func) {
   std::ostringstream oss;
-  oss << "test failed: " << expr << " at " << file << ":" << line;
+  oss << "test failed: " << expr << " at " << file << ":" << line << " in " << func;
   throw ltest::TestFailure(oss.str());
 }
 }  // namespace ltest
@@ -38,7 +38,7 @@ inline void LtestFail(const char* expr, const char* file, int line) {
 #define as_atomic attr(ltest_atomic)
 
 #define rassert(expr) \
-  ((expr) ? (void)0 : ltest::LtestFail(#expr, __FILE__, __LINE__))
+  ((expr) ? (void)0 : ltest::LtestFail(#expr, __FILE__, __LINE__, __FUNCTION__))
 
 namespace ltest {
 
@@ -52,6 +52,12 @@ std::string toString(const T& a)
   return std::to_string(a);
 }
 
+template <typename T>
+std::string toString(const T &a)
+  requires(std::is_pointer_v<T>)
+{
+  return "ptr";
+}
 template <typename tuple_t, size_t... index>
 auto toStringListHelper(const tuple_t& t,
                         std::index_sequence<index...>) noexcept {

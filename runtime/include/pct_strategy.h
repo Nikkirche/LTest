@@ -45,6 +45,9 @@ struct PctStrategy : public BaseStrategyWithThreads<TargetObj, Verifier> {
         if (!is_free && !this->VerifyExistingTask(threads[i].back(), i)) {
           continue;
         }
+        if (!this->CanThreadContinue(i) || !this->NewTaskAreEnabled(i)) {
+          continue;
+        }
         index = i;
         prior = priorities[i];
         break;
@@ -90,6 +93,9 @@ struct PctStrategy : public BaseStrategyWithThreads<TargetObj, Verifier> {
         // resume)
         continue;
       }
+      if (!this->CanThreadContinue(i) || !this->NewTaskAreEnabled(i)) {
+        continue;
+      }
       if (!is_free && !this->VerifyExistingTask(threads[i].back(), i)) {
         continue;
       }
@@ -120,9 +126,11 @@ struct PctStrategy : public BaseStrategyWithThreads<TargetObj, Verifier> {
     return index_of_max;
   }
 
+  bool IsExhausted() override { return false; }
+
   // NOTE: `Next` version use heuristics for livelock avoiding, but not there
   // refactor later to avoid copy-paste
-  std::optional<TaskWithMetaData> NextSchedule() override {
+  StrategyNextResult NextSchedule() override {
     auto& round_schedule = this->round_schedule;
     auto& threads = this->threads;
     size_t max = std::numeric_limits<size_t>::min();
@@ -181,7 +189,7 @@ struct PctStrategy : public BaseStrategyWithThreads<TargetObj, Verifier> {
     }
 
     if (max == std::numeric_limits<size_t>::min()) {
-      return std::nullopt;
+      return DEADLOCK;
     }
 
     // Check whether the priority change is required
@@ -218,8 +226,6 @@ struct PctStrategy : public BaseStrategyWithThreads<TargetObj, Verifier> {
     BaseStrategyWithThreads<TargetObj, Verifier>::SetCustomRound(custom_round);
     UpdateStatistics();
   }
-
-  ~PctStrategy() { this->TerminateTasks(); }
 
  private:
   void UpdateStatistics() {
@@ -263,6 +269,18 @@ struct PctStrategy : public BaseStrategyWithThreads<TargetObj, Verifier> {
     }
   }
 
+  void UpdateSimulatorState(size_t thread_id, Scheduler::SeqHistory& seq,
+                            FullHistoryWithThreads& full) override {
+    BaseStrategyWithThreads<TargetObj, Verifier>::UpdateSimulatorState(
+        thread_id, seq, full);
+    if (this->threads.size() > this->priorities.size()) {
+      size_t new_k = k_statistics.empty() ? 1
+                                          : std::reduce(k_statistics.begin(),
+                                                        k_statistics.end()) /
+                                                k_statistics.size();
+      PrepareForDepth(current_depth, new_k);
+    }
+  }
   std::vector<size_t> k_statistics;
   size_t current_depth;
   size_t current_schedule_length;

@@ -1,5 +1,8 @@
 #pragma once
+#include <iostream>
+#include <memory_resource>
 #include <mutex>
+#include <variant>
 
 #include "block_manager.h"
 #include "lib.h"
@@ -10,6 +13,7 @@ namespace ltest {
 struct mutex {
   as_atomic void lock() {
     while (locked) {
+      CoroCtxGuard guard;
       this_coro->SetBlocked(state);
       CoroYield();
     }
@@ -18,6 +22,7 @@ struct mutex {
 
   as_atomic bool try_lock() {
     if (locked) {
+      CoroCtxGuard guard;
       CoroYield();
       return false;
     }
@@ -43,7 +48,22 @@ struct condition_variable {
     const std::intptr_t key = reinterpret_cast<std::intptr_t>(this);
     lock.unlock();
     this_coro->SetBlocked({key, 0});
-    CoroYield();
+    {
+      CoroCtxGuard guard;
+      CoroYield();
+    }
+    lock.lock();
+  }
+
+  // is needed to match pthread api - there doesn't exists any std::unique_lock
+  as_atomic void wait(ltest::mutex &lock) {
+    const std::intptr_t key = reinterpret_cast<std::intptr_t>(this);
+    lock.unlock();
+    this_coro->SetBlocked({key, 0});
+    {
+      CoroCtxGuard guard;
+      CoroYield();
+    }
     lock.lock();
   }
 
@@ -71,7 +91,10 @@ struct shared_mutex_r {
   as_atomic void lock() {
     while (locked != 0) {
       this_coro->SetBlocked(state);
-      CoroYield();
+      {
+        CoroCtxGuard guard;
+        CoroYield();
+      }
     }
     locked = -1;
   }
@@ -82,7 +105,10 @@ struct shared_mutex_r {
   as_atomic void lock_shared() {
     while (locked == -1) {
       this_coro->SetBlocked(state);
-      CoroYield();
+      {
+        CoroCtxGuard guard;
+        CoroYield();
+      }
     }
     ++locked;
   }
@@ -109,39 +135,44 @@ struct shared_mutex_r {
 struct shared_mutex {
   as_atomic void lock() {
     std::unique_lock lock{mutex_};
-    while (write_) {
+    while (has_write()) {
       write_entered_.wait(lock);
     }
-    write_ = true;
+    write_ = this_thread_id;
     while (reader_count_ > 0) {
       no_readers_.wait(lock);
     }
   }
-
+  // in pthread api, unlock_shared calls under the hood unlock()
   as_atomic void unlock() {
     std::unique_lock lock{mutex_};
-    write_ = false;
-    write_entered_.notify_all();
+    if (write_ == this_thread_id) {
+      write_ = -1;
+      write_entered_.notify_all();
+    }
+    else {
+      --reader_count_;
+      if (has_write() && reader_count_ == 0) {
+        no_readers_.notify_one();
+      }
+    }
   }
 
   as_atomic void lock_shared() {
     std::unique_lock lock{mutex_};
-    while (write_) {
+    while (has_write()) {
       write_entered_.wait(lock);
     }
     ++reader_count_;
   }
   as_atomic void unlock_shared() {
-    std::unique_lock lock{mutex_};
-    --reader_count_;
-    if (write_ && reader_count_ == 0) {
-      no_readers_.notify_one();
-    }
+    unlock();
   }
 
  private:
+  [[nodiscard]] bool has_write() const { return write_ != -1ull; }
   int reader_count_{0};
-  bool write_{false};
+  size_t write_ = -1;
 
   ltest::condition_variable write_entered_;
   ltest::condition_variable no_readers_;
@@ -150,3 +181,11 @@ struct shared_mutex {
 };
 
 }  // namespace ltest
+inline std::pmr::monotonic_buffer_resource resource(1000);
+inline std::pmr::unordered_map<pthread_mutex_t *, std::variant<ltest::mutex>>
+    mutexes(&resource);
+inline std::pmr::unordered_map<pthread_rwlock_t *,
+                               std::variant<ltest::shared_mutex>>
+    shared_mutexes(&resource);
+inline std::pmr::unordered_map<pthread_cond_t *, ltest::condition_variable>
+    cond_variables(&resource);

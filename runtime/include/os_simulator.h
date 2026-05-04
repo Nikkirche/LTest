@@ -1,0 +1,43 @@
+#pragma once
+#include <cstdint>
+#include <functional>
+#include <optional>
+#include <string>
+#include <variant>
+
+#include "lib.h"
+#include "mock_res.h"
+#include "pretty_print.h"
+#include "scheduler_fwd.h"
+#include "stable_vector.h"
+
+struct CreatedThreadInfo {
+  std::function<void*(void*)> function;
+  std::string name;
+};
+
+
+struct JoinThreadInfo {
+  uint64_t thread_id;
+  void** retval;
+};
+
+extern uint64_t current_max_thread_id;
+extern std::optional<std::variant<CreatedThreadInfo, JoinThreadInfo>> thread_info;
+
+inline std::string GetThreadResultToString(const ValueWrapper&) {
+  return "Thread result";
+}
+
+class OSSimulator {
+  MemoryHandler os_memory;
+  std::unordered_map<uint64_t, std::pair<uint64_t, void**>> join_pairs;
+ public:
+  OSSimulator() { memory_handler = &os_memory; }
+  ~OSSimulator(){ memory_handler->FreeAllMemory();}
+  bool CanThreadContinue(std::size_t number);
+  void UpdateOSState(size_t thread, Scheduler::SeqHistory& seq, FullHistoryWithThreads& full);
+  void ResetOSState();
+protected:
+  std::vector<StableVector<Task>> threads;
+};

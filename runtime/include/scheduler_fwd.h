@@ -54,8 +54,7 @@ struct BasicScheduler {
   using SeqHistory = std::vector<Event>;
 
   struct NonLinearizableHistory {
-    enum class Reason { DEADLOCK, NON_LINEARIZABLE_HISTORY };
-
+    enum class Reason { ASSERT_FAILURE, DEADLOCK, NON_LINEARIZABLE_HISTORY };
     FullHistory full;
     SeqHistory seq;
     Reason reason;
@@ -64,7 +63,9 @@ struct BasicScheduler {
   using Result = std::optional<NonLinearizableHistory>;
 
   virtual Result Run() = 0;
-  virtual int GetStartegyThreadsCount() const = 0;
+
+  virtual size_t GetStrategyThreadsCount() const = 0;
+
   virtual ~BasicScheduler() = default;
 };
 
@@ -93,7 +94,7 @@ struct BasicSchedulerWithReplay : BasicScheduler<Event> {
       const std::vector<int>& tasks_ordering,
       ReplayMode mode = ReplayMode::CompleteOnLast) = 0;
 
-  virtual Strategy& GetStrategy() const = 0;
+  [[nodiscard]] virtual Strategy& GetStrategy() const = 0;
 
   virtual void Minimize(NonLinearizableHistory& nonlinear_history,
                         const RoundMinimizorT<Event>& minimizor) = 0;
@@ -104,3 +105,17 @@ using SchedulerWithReplay = BasicSchedulerWithReplay<HistoryEvent>;
 
 using DualScheduler = BasicScheduler<DualHistoryEvent>;
 using DualSchedulerWithReplay = BasicSchedulerWithReplay<DualHistoryEvent>;
+// ----------------------------
+// Backward-compatible aliases (normal + dual)
+// ----------------------------
+
+// normal (HistoryEvent)
+using RoundMinimizor = RoundMinimizorT<HistoryEvent>;
+using GreedyRoundMinimizor = GreedyRoundMinimizorT<HistoryEvent>;
+using SameInterleavingMinimizor = SameInterleavingMinimizorT<HistoryEvent>;
+using StrategyExplorationMinimizor = StrategyExplorationMinimizorT<HistoryEvent>;
+
+// dual (DualHistoryEvent)
+using DualRoundMinimizor = RoundMinimizorT<DualHistoryEvent>;
+using DualSameInterleavingMinimizor = SameInterleavingMinimizorT<DualHistoryEvent>;
+using DualStrategyExplorationMinimizor = StrategyExplorationMinimizorT<DualHistoryEvent>;

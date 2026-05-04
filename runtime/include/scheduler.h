@@ -19,6 +19,7 @@
 #include "lincheck.h"
 #include "lincheck_dual.h"
 #include "logger.h"
+#include "os_simulator.h"
 #include "pretty_print.h"
 #include "scheduler_fwd.h"
 #include "stable_vector.h"
@@ -31,6 +32,26 @@ struct TaskWithMetaData {
   size_t thread_id;
 };
 
+enum StrategyNextScheduleFailure {
+  DEADLOCK,
+  NEED_REPLAY,
+  EXHAUSTED_INTERLEAVINGS
+};
+
+using StrategyNextResult =
+    std::variant<StrategyNextScheduleFailure, TaskWithMetaData>;
+
+inline Scheduler::FullHistory ConvFullHistWithThreadToFullHist(
+    const FullHistoryWithThreads& full) {
+  Scheduler::FullHistory res;
+  for (auto& f : full) {
+    if (auto t = std::get_if<std::reference_wrapper<Task>>(&f.second)) {
+      res.push_back(*t);
+    }
+  }
+  return res;
+}
+
 /// StrategyTaskVerifier is required for scheduling only allowed tasks
 /// Some data structures doesn't allow us to schedule one tasks before another
 /// e.g. Mutex -- we are not allowed to schedule unlock before lock call, it is
@@ -38,11 +59,34 @@ struct TaskWithMetaData {
 template <typename T>
 concept StrategyTaskVerifier = requires(T a) {
   {
-    a.Verify(std::declval<const std::string&>(), size_t())
+    a.Verify(std::declval<const std::string&>(), size_t(), bool())
   } -> std::same_as<bool>;
   { a.OnFinished(std::declval<Task&>(), size_t()) } -> std::same_as<void>;
-  { a.ReleaseTask(size_t()) } -> std::same_as<std::optional<std::string>>;
   { a.Reset() } -> std::same_as<void>;
+};
+
+struct OnlyOneTaskPerThreadVerifier {
+  bool Verify(const std::string&, size_t thread_id, bool is_new) {
+    if (!is_new) {
+      return true;
+    }
+    if (thread_id != 0 || has_started) {
+      return false;
+    }
+    has_started = true;
+    return true;
+  }
+
+  void OnFinished(Task&, size_t) {
+    // intentionally do nothing
+  }
+
+  void Reset() {
+    std::cerr << "Reset called\n";
+    has_started = false;
+  }
+
+  bool has_started = false;
 };
 
 namespace ltest::verifier_hooks {
@@ -78,13 +122,12 @@ bool VerifyStart(V& v, const std::string& method, std::size_t thread_id,
 // will be the next one it can be implemented by different strategies, such as:
 // randomized/tla/fair
 struct Strategy {
+  virtual bool IsExhausted() = 0;
   virtual std::optional<size_t> NextThreadId() = 0;
 
-  virtual std::optional<TaskWithMetaData> Next() = 0;
+  virtual StrategyNextResult Next() = 0;
 
   virtual void TerminateTasks() = 0;
-
-  virtual void AbortTasksForFailure() = 0;
 
   virtual void ResetExplorationState() = 0;
 
@@ -92,7 +135,7 @@ struct Strategy {
   // round by inserting new tasks in it, but schedules the threads accoding to
   // the strategy policy with previously genereated and saved round (used for
   // round replaying functionality)
-  virtual std::optional<TaskWithMetaData> NextSchedule() = 0;
+  virtual StrategyNextResult NextSchedule() = 0;
 
   // Returns { task, its thread id } by task id. (TODO: make it `const` method)
   // This is a pure lookup over the task set already generated for the round.
@@ -153,6 +196,9 @@ struct Strategy {
   // Returns the number of threads
   virtual int GetThreadsCount() const = 0;
 
+  virtual void UpdateSimulatorState(size_t thread_id,
+                                  Scheduler::SeqHistory& seq,
+                                  FullHistoryWithThreads& full) = 0;
   // Called when the finished task must be reported to the verifier
   // (Strategy is a pure interface, the templated subclass
   // BaseStrategyWithThreads knows about the Verifier and will delegate to that)
@@ -205,7 +251,7 @@ struct Strategy {
 };
 
 template <typename TargetObj, StrategyTaskVerifier Verifier>
-struct BaseStrategyWithThreads : public Strategy {
+struct BaseStrategyWithThreads : public Strategy, OSSimulator {
   using TargetFactory = std::function<std::unique_ptr<TargetObj>()>;
 
   BaseStrategyWithThreads(size_t threads_count,
@@ -297,9 +343,6 @@ struct BaseStrategyWithThreads : public Strategy {
       return false;
     }
 
-    if (!thread.back()->IsReturned()) {
-      FinishTaskDuringTermination(thread.back(), thread_id);
-    }
     thread.pop_back();
     SetTaskRemoved(task_id, false);
     return true;
@@ -325,7 +368,7 @@ struct BaseStrategyWithThreads : public Strategy {
     // also resets the state
     this->TerminateTasks();  // TODO: what about different threads count for
                              // wmm_graph?
-
+    ResetOSState();
     // this could happen if we run custom scenarios
     // (which could have arbitrary number of threads)
     if (this->threads.size() != this->threads_count) {
@@ -337,7 +380,7 @@ struct BaseStrategyWithThreads : public Strategy {
       // more optimal allocations-wise implementation
       for (auto& thread : this->threads) {
         // We don't have to keep references alive
-        while (thread.size() > 0) {
+        while (!thread.empty()) {
           thread.pop_back();
         }
       }
@@ -350,7 +393,7 @@ struct BaseStrategyWithThreads : public Strategy {
 
   void ResetCurrentRound() override {
     this->SetAllowNewTasks(true);
-    AbortForRoundReset();
+    ResetOSState();
     std::fill(round_schedule.begin(), round_schedule.end(), -1);
 
     state = target_factory();
@@ -425,7 +468,7 @@ struct BaseStrategyWithThreads : public Strategy {
                        const ltest::StartContext& ctx) override {
     return ltest::verifier_hooks::VerifyStart(
                sched_checker, std::string(task->GetName()), thread_id, ctx) &&
-           sched_checker.Verify(std::string(task->GetName()), thread_id);
+           sched_checker.Verify(std::string(task->GetName()), thread_id, true);
   }
 
   void OnVerifierTaskStart(Task& task, size_t thread_id) override {
@@ -444,18 +487,18 @@ struct BaseStrategyWithThreads : public Strategy {
                   }) {
       return sched_checker.VerifyExisting(task, thread_id);
     } else {
-      return sched_checker.Verify(std::string(task->GetName()), thread_id);
+      return sched_checker.Verify(std::string(task->GetName()), thread_id, true);
     }
   }
 
-  std::optional<TaskWithMetaData> Next() override {
+  StrategyNextResult Next() override {
     return NextVerifiedFor(NextThreadId());
   }
 
-  std::optional<TaskWithMetaData> NextVerifiedFor(
+  StrategyNextResult NextVerifiedFor(
       std::optional<size_t> opt_thread_index) {
     if (!opt_thread_index.has_value()) {
-      return std::nullopt;
+      return DEADLOCK;
     }
     size_t thread_index = opt_thread_index.value();
     // it's the first task if the queue is empty
@@ -496,14 +539,14 @@ struct BaseStrategyWithThreads : public Strategy {
 
         if (ltest::verifier_hooks::VerifyStart(
                 sched_checker, constructor.GetName(), thread_index, ctx) &&
-            this->sched_checker.Verify(constructor.GetName(), thread_index)) {
+            this->sched_checker.Verify(constructor.GetName(), thread_index, is_new)) {
           verified_constructor = i;
           break;
         }
       }
 
       if (verified_constructor == static_cast<size_t>(-1)) {
-        return std::nullopt;
+        return DEADLOCK;
       }
 
       const TaskBuilder& chosen = this->constructors[verified_constructor];
@@ -521,27 +564,24 @@ struct BaseStrategyWithThreads : public Strategy {
   }
 
   // Terminates all running tasks.
-  // We do it in a dangerous way: in random order.
-  // Actually, we assume obstruction free here.
   void TerminateTasks() override {
-    auto result = DrainTasks();
-    if (result.status == CleanupResult::DRAINED) {
-      return;
-    }
-
-    AbortTasks(std::move(result.original_thread_sizes));
+    sched_checker.Reset();
+    // must appear before state reset, so that constructors of atomics in
+    // data structure under test register themselves in the new execution graph
+    // TODO: for custom scenarios threads number might differ, check for places
+    // where `threads.size()` cannot be used
+    ResetWmmGraph(threads.size());
+    state.reset(new TargetObj{});
   }
-
-  void AbortTasksForFailure() override { AbortForRoundReset(); }
 
   // Lightweight reset strictly for ExploreRound loops.
   // Keeps task objects & scheduler bookkeeping intact, resets spec state &
   // block queues.
   void ResetExplorationState() override {
-    AbortForRoundReset();
-
+    ResetOSState();
     std::fill(round_schedule.begin(), round_schedule.end(), -1);
     this->SetAllowNewTasks(true);
+    state = target_factory();
     ltest::verifier_hooks::OnRoundStart(sched_checker, threads_count);
 
     for (auto& thread : threads) {
@@ -554,542 +594,6 @@ struct BaseStrategyWithThreads : public Strategy {
   }
 
  protected:
-  enum class CleanupResult {
-    DRAINED,
-    STUCK,
-  };
-
-  struct CleanupRunResult {
-    CleanupResult status;
-    std::vector<size_t> original_thread_sizes;
-  };
-
-  bool IsCleanupTask(size_t thread_id, size_t task_index,
-                     const std::vector<size_t>& original_thread_sizes) const {
-    return task_index >= original_thread_sizes[thread_id];
-  }
-
-  bool AppendReleaseTaskIfAny(size_t thread_index) {
-    std::optional<std::string> releaseTask =
-        this->sched_checker.ReleaseTask(thread_index);
-
-    if (!releaseTask) {
-      return false;
-    }
-
-    auto constructor_it = std::find_if(
-        constructors.begin(), constructors.end(),
-        [&](const TaskBuilder& b) { return b.GetName() == *releaseTask; });
-
-    if (constructor_it == constructors.end()) {
-      return false;
-    }
-
-    if (!this->sched_checker.Verify(*releaseTask, thread_index)) {
-      return false;
-    }
-
-    auto task = constructor_it->Build(this->state.get(), thread_index,
-                                      this->new_task_id++);
-
-    ltest::verifier_hooks::OnTaskStarted(sched_checker,
-                                         std::string(task->GetName()),
-                                         thread_index, task->GetId());
-    this->threads[thread_index].emplace_back(task);
-    return true;
-  }
-
-  void FinishTaskDuringTermination(Task& task, size_t thread_index) {
-    if (task->IsReturned()) {
-      return;
-    }
-
-    // Let the fiber reach its own return path whenever possible. Merely
-    // marking an unfinished boost::context fiber as returned can make its
-    // destructor throw boost::context::detail::forced_unwind.
-    const bool old_terminating = ltest_round_terminating;
-    ltest_round_terminating = true;
-    task->TryTerminate(thread_index);
-    ltest_round_terminating = old_terminating;
-
-    if (!task->IsReturned()) {
-      task->MarkFinishedDuringTermination();
-    }
-  }
-
-  void FinalizeCleanup(const std::vector<size_t>& original_thread_sizes) {
-    // Some awaiters explicitly require cleanup while the old target is still
-    // alive (for example Folly coroutine wrappers that unregister waiters
-    // directly from the target object). This must apply to all completed
-    // tasks, not only termination-marked ones: round reset may destroy the
-    // old target after a fully successful round as well.
-    for (auto& thread : this->threads) {
-      for (size_t i = 0; i < thread.size(); ++i) {
-        if (thread[i]->CleanupBeforeTargetDestroy()) {
-          thread[i]->RunDeferredCleanup();
-        }
-      }
-    }
-
-    // Must appear before target reconstruction, so atomics in the new target
-    // register themselves in the new execution graph.
-    ResetWmmGraph(static_cast<int>(this->threads.size()));
-    // Some coroutine targets (for example libcoro queue/ring_buffer) wake
-    // registered awaiters from their destructor. Keep awaiter/task objects
-    // alive while destroying the old target, then release deferred coroutine
-    // handles and keepalive objects.
-    state = target_factory();
-
-    for (auto& thread : this->threads) {
-      for (size_t i = 0; i < thread.size(); ++i) {
-        if (!thread[i]->CleanupBeforeTargetDestroy()) {
-          thread[i]->RunDeferredCleanup();
-        }
-      }
-    }
-
-    for (size_t tid = 0; tid < this->threads.size(); ++tid) {
-      auto& thread = this->threads[tid];
-      while (thread.size() > original_thread_sizes[tid]) {
-        thread.pop_back();
-      }
-    }
-
-    block_manager.queues.clear();
-    ltest_round_terminating = false;
-  }
-
-  void CutOffThreadUserSuffix(
-      size_t thread_index, std::vector<size_t>& task_indexes,
-      const std::vector<size_t>& original_thread_sizes) {
-    auto& thread = this->threads[thread_index];
-    auto& task_index = task_indexes[thread_index];
-
-    const size_t limit =
-        std::min(original_thread_sizes[thread_index], thread.size());
-
-    for (size_t i = task_index; i < limit; ++i) {
-      if (!thread[i]->IsReturned()) {
-        FinishTaskDuringTermination(thread[i], thread_index);
-      }
-    }
-
-    task_index = limit;
-  }
-
-  CleanupRunResult DrainTasks() {
-    ltest_round_terminating = false;
-
-    std::vector<size_t> original_thread_sizes;
-    original_thread_sizes.reserve(this->threads.size());
-    for (auto& thread : this->threads) {
-      original_thread_sizes.push_back(thread.size());
-    }
-
-    auto& round_schedule = this->round_schedule;
-    assert(round_schedule.size() == this->threads.size() &&
-           "sizes expected to be the same");
-    round_schedule.assign(round_schedule.size(), -1);
-
-    std::vector<size_t> task_indexes(this->threads.size(), 0);
-    std::vector<bool> thread_cutoff(this->threads.size(), false);
-
-    while (true) {
-      bool made_progress = false;
-
-      // ----------------------------
-      // Pass 0: normalize indexes / apply thread cutoff to user suffix
-      // ----------------------------
-      for (size_t thread_index = 0; thread_index < this->threads.size();
-           ++thread_index) {
-        auto& thread = this->threads[thread_index];
-        auto& task_index = task_indexes[thread_index];
-
-        while (task_index < thread.size() && thread[task_index]->IsReturned()) {
-          task_index++;
-        }
-
-        if (thread_cutoff[thread_index] &&
-            task_index <
-                std::min(original_thread_sizes[thread_index], thread.size())) {
-          CutOffThreadUserSuffix(thread_index, task_indexes,
-                                 original_thread_sizes);
-        }
-
-        while (task_index < thread.size() && thread[task_index]->IsReturned()) {
-          task_index++;
-        }
-      }
-
-      // ----------------------------
-      // Pass 1: append cleanup release tasks to idle threads
-      // ----------------------------
-      for (size_t thread_index = 0; thread_index < this->threads.size();
-           ++thread_index) {
-        auto& thread = this->threads[thread_index];
-        auto& task_index = task_indexes[thread_index];
-
-        if (task_index < thread.size()) {
-          continue;
-        }
-
-        AppendReleaseTaskIfAny(thread_index);
-      }
-
-      // ----------------------------
-      // Pass 2: run ALL cleanup tasks to completion first
-      // ----------------------------
-      for (size_t thread_index = 0; thread_index < this->threads.size();
-           ++thread_index) {
-        auto& thread = this->threads[thread_index];
-        auto& task_index = task_indexes[thread_index];
-
-        while (task_index < thread.size() && thread[task_index]->IsReturned()) {
-          task_index++;
-        }
-
-        if (task_index >= thread.size()) {
-          continue;
-        }
-
-        if (!IsCleanupTask(thread_index, task_index, original_thread_sizes)) {
-          continue;
-        }
-
-        auto& task = thread[task_index];
-
-        // Hidden cleanup task must have strict priority and should not be
-        // interleaved with ordinary user tasks.
-        while (!task->IsReturned() && !task->IsBlocked()) {
-          task->Resume(thread_index);
-          made_progress = true;
-        }
-
-        if (task->IsReturned()) {
-          OnVerifierTaskFinish(task, thread_index);
-        } else if (task->IsBlocked()) {
-          return {CleanupResult::STUCK, original_thread_sizes};
-        }
-      }
-
-      // Cleanup tasks may wake blocked user tasks. Do not restart the cleanup
-      // loop here, otherwise ReleaseTask() can keep issuing producers while the
-      // awakened task never gets a chance to resume and update verifier state.
-
-      // ----------------------------
-      // Pass 3: run ordinary user tasks, but only if they are still legal
-      // in the current post-cleanup state.
-      // ----------------------------
-      for (size_t thread_index = 0; thread_index < this->threads.size();
-           ++thread_index) {
-        auto& thread = this->threads[thread_index];
-        auto& task_index = task_indexes[thread_index];
-
-        while (task_index < thread.size() && thread[task_index]->IsReturned()) {
-          task_index++;
-        }
-
-        if (task_index >= thread.size()) {
-          continue;
-        }
-
-        // Cleanup tasks are handled only in Pass 2.
-        if (IsCleanupTask(thread_index, task_index, original_thread_sizes)) {
-          continue;
-        }
-
-        if (thread_cutoff[thread_index]) {
-          continue;
-        }
-
-        auto& task = thread[task_index];
-
-        // IMPORTANT:
-        // A task that was legal in the original execution may become illegal
-        // after cleanup release chain changed the semantic state.
-        if (!task->IsReturned() &&
-            !this->VerifyExistingTask(task, thread_index)) {
-          thread_cutoff[thread_index] = true;
-          CutOffThreadUserSuffix(thread_index, task_indexes,
-                                 original_thread_sizes);
-          made_progress = true;
-          continue;
-        }
-
-        OnVerifierTaskStart(task, thread_index);
-
-        while (!task->IsReturned() && !task->IsBlocked()) {
-          task->Resume(thread_index);
-          made_progress = true;
-        }
-
-        if (task->IsReturned()) {
-          OnVerifierTaskFinish(task, thread_index);
-        }
-      }
-
-      // ----------------------------
-      // Completion / stuck
-      // ----------------------------
-      // Recompute whether anything semantically unfinished still remains.
-      bool semantically_unfinished = false;
-      for (size_t thread_index = 0; thread_index < this->threads.size();
-           ++thread_index) {
-        auto& thread = this->threads[thread_index];
-        auto task_index = task_indexes[thread_index];
-
-        while (task_index < thread.size() && thread[task_index]->IsReturned()) {
-          task_index++;
-        }
-
-        if (task_index >= thread.size()) {
-          continue;
-        }
-
-        // If remaining task is a user task in a cut-off thread, ignore it:
-        // we already declared this suffix semantically unreachable and marked
-        // it.
-        if (thread_cutoff[thread_index] &&
-            !IsCleanupTask(thread_index, task_index, original_thread_sizes)) {
-          continue;
-        }
-
-        semantically_unfinished = true;
-        break;
-      }
-
-      if (!semantically_unfinished) {
-        bool appended_release_task = false;
-        for (size_t thread_index = 0; thread_index < this->threads.size();
-             ++thread_index) {
-          auto& thread = this->threads[thread_index];
-          auto task_index = task_indexes[thread_index];
-
-          while (task_index < thread.size() &&
-                 thread[task_index]->IsReturned()) {
-            task_index++;
-          }
-
-          if (task_index >= thread.size() &&
-              AppendReleaseTaskIfAny(thread_index)) {
-            appended_release_task = true;
-          }
-        }
-
-        if (appended_release_task) {
-          continue;
-        }
-
-        FinalizeCleanup(original_thread_sizes);
-        return {CleanupResult::DRAINED, std::move(original_thread_sizes)};
-      }
-
-      if (!made_progress) {
-        return {CleanupResult::STUCK, original_thread_sizes};
-      }
-    }
-  }
-
-  void AbortTasks(std::vector<size_t> original_thread_sizes = {}) {
-    ltest_round_terminating = true;
-
-    if (original_thread_sizes.empty()) {
-      original_thread_sizes.reserve(this->threads.size());
-      for (auto& thread : this->threads) {
-        original_thread_sizes.push_back(thread.size());
-      }
-    }
-
-    auto& round_schedule = this->round_schedule;
-    assert(round_schedule.size() == this->threads.size() &&
-           "sizes expected to be the same");
-    round_schedule.assign(round_schedule.size(), -1);
-
-    std::vector<size_t> task_indexes(this->threads.size(), 0);
-    std::vector<bool> thread_cutoff(this->threads.size(), false);
-
-    bool forced_unblock_phase = false;
-
-    while (true) {
-      bool made_progress = false;
-
-      // ----------------------------
-      // Pass 0: normalize indexes / apply thread cutoff to user suffix
-      // ----------------------------
-      for (size_t thread_index = 0; thread_index < this->threads.size();
-           ++thread_index) {
-        auto& thread = this->threads[thread_index];
-        auto& task_index = task_indexes[thread_index];
-
-        while (task_index < thread.size() && thread[task_index]->IsReturned()) {
-          task_index++;
-        }
-
-        if (thread_cutoff[thread_index] &&
-            task_index <
-                std::min(original_thread_sizes[thread_index], thread.size())) {
-          CutOffThreadUserSuffix(thread_index, task_indexes,
-                                 original_thread_sizes);
-        }
-
-        while (task_index < thread.size() && thread[task_index]->IsReturned()) {
-          task_index++;
-        }
-      }
-
-      // ----------------------------
-      // Pass 1: append cleanup release tasks to idle threads
-      // ----------------------------
-      for (size_t thread_index = 0; thread_index < this->threads.size();
-           ++thread_index) {
-        auto& thread = this->threads[thread_index];
-        auto& task_index = task_indexes[thread_index];
-
-        if (task_index < thread.size()) {
-          continue;
-        }
-
-        AppendReleaseTaskIfAny(thread_index);
-      }
-
-      // ----------------------------
-      // Pass 2: run ALL cleanup tasks to completion first
-      // ----------------------------
-      for (size_t thread_index = 0; thread_index < this->threads.size();
-           ++thread_index) {
-        auto& thread = this->threads[thread_index];
-        auto& task_index = task_indexes[thread_index];
-
-        while (task_index < thread.size() && thread[task_index]->IsReturned()) {
-          task_index++;
-        }
-
-        if (task_index >= thread.size()) {
-          continue;
-        }
-
-        if (!IsCleanupTask(thread_index, task_index, original_thread_sizes)) {
-          continue;
-        }
-
-        auto& task = thread[task_index];
-
-        while (!task->IsReturned() && !task->IsBlocked()) {
-          std::fprintf(stderr,
-                       "[abort] run cleanup task '%s' id=%d on thread %zu\n",
-                       std::string(task->GetName()).c_str(), task->GetId(),
-                       thread_index);
-
-          task->Resume(thread_index);
-          made_progress = true;
-        }
-
-        if (task->IsReturned()) {
-          OnVerifierTaskFinish(task, thread_index);
-        }
-      }
-
-      // Cleanup tasks may wake blocked user tasks; let Pass 3 observe that
-      // progress before asking the verifier for another cleanup producer.
-
-      // ----------------------------
-      // Pass 3: run ordinary user tasks if still semantically legal
-      // ----------------------------
-      for (size_t thread_index = 0; thread_index < this->threads.size();
-           ++thread_index) {
-        auto& thread = this->threads[thread_index];
-        auto& task_index = task_indexes[thread_index];
-
-        while (task_index < thread.size() && thread[task_index]->IsReturned()) {
-          task_index++;
-        }
-
-        if (task_index >= thread.size()) {
-          continue;
-        }
-
-        if (IsCleanupTask(thread_index, task_index, original_thread_sizes)) {
-          continue;
-        }
-
-        if (thread_cutoff[thread_index]) {
-          continue;
-        }
-
-        auto& task = thread[task_index];
-
-        if (!task->IsReturned() &&
-            !this->VerifyExistingTask(task, thread_index)) {
-          thread_cutoff[thread_index] = true;
-          CutOffThreadUserSuffix(thread_index, task_indexes,
-                                 original_thread_sizes);
-          made_progress = true;
-          continue;
-        }
-
-        OnVerifierTaskStart(task, thread_index);
-
-        while (!task->IsReturned() && !task->IsBlocked()) {
-          task->Resume(thread_index);
-          made_progress = true;
-        }
-
-        if (task->IsReturned()) {
-          OnVerifierTaskFinish(task, thread_index);
-
-          if (task->FinishedDuringTermination()) {
-            thread_cutoff[thread_index] = true;
-            CutOffThreadUserSuffix(thread_index, task_indexes,
-                                   original_thread_sizes);
-          }
-        }
-      }
-
-      if (!made_progress) {
-        if (!forced_unblock_phase) {
-          block_manager.queues.clear();
-          forced_unblock_phase = true;
-          continue;
-        }
-        break;
-      }
-    }
-
-    // Mark any remaining unfinished tasks as finished during termination.
-    for (size_t thread_index = 0; thread_index < this->threads.size();
-         ++thread_index) {
-      auto& thread = this->threads[thread_index];
-      for (size_t i = 0; i < thread.size(); ++i) {
-        if (!thread[i]->IsReturned()) {
-          FinishTaskDuringTermination(thread[i], thread_index);
-        }
-      }
-    }
-
-    FinalizeCleanup(original_thread_sizes);
-  }
-
-  void AbortForRoundReset() {
-    ltest_round_terminating = true;
-
-    std::vector<size_t> original_thread_sizes;
-    original_thread_sizes.reserve(this->threads.size());
-    for (auto& thread : this->threads) {
-      original_thread_sizes.push_back(thread.size());
-    }
-
-    for (size_t thread_index = 0; thread_index < this->threads.size();
-         ++thread_index) {
-      auto& thread = this->threads[thread_index];
-      for (size_t i = 0; i < thread.size(); ++i) {
-        if (!thread[i]->IsReturned()) {
-          FinishTaskDuringTermination(thread[i], thread_index);
-        }
-      }
-    }
-
-    FinalizeCleanup(original_thread_sizes);
-  }
 
   /// Returns task id in threads[thread_index] skipping removed tasks
   int GetNextTaskInThread(int thread_index) const override {
@@ -1103,6 +607,23 @@ struct BaseStrategyWithThreads : public Strategy {
     }
 
     return task_index;
+  }
+
+  void UpdateSimulatorState(size_t thread_id, Scheduler::SeqHistory& seq,
+                          FullHistoryWithThreads& full) override {
+    return this->UpdateOSState(thread_id, seq, full);
+  }
+
+  // it's a bad workaround, but i really doesn't know how to implement it better
+  bool NewTaskAreEnabled(size_t thread_id) {
+    if constexpr (std::is_same_v<Verifier, OnlyOneTaskPerThreadVerifier>) {
+      bool is_new =
+          threads[thread_id].empty() || threads[thread_id].back()->IsReturned();
+      if (is_new && !threads[thread_id].empty()) {
+        return false;
+      }
+    }
+    return true;
   }
 
   Verifier sched_checker{};
@@ -1204,102 +725,6 @@ static inline bool IsReportableDeadlockHistory(const std::vector<Event>& seq) {
   // but it is not a user-visible deadlock.
   return RoundMinimizorT<Event>::HasAnyStartedOp(seq) &&
          MinBadTraits<Event>::HasPendingVisibleOp(seq);
-}
-
-struct TLAThread {
-  size_t id;
-  StableVector<Task> tasks;
-};
-
-struct TLAFrame {
-  Task* task{};
-  int thread_id{};
-  bool is_new{};
-};
-
-static inline void InitTLAThreads(StableVector<TLAThread>& threads,
-                                  size_t threads_count) {
-  for (size_t i = 0; i < threads_count; ++i) {
-    threads.emplace_back(TLAThread{
-        .id = i,
-        .tasks = StableVector<Task>{},
-    });
-  }
-}
-
-template <class Threads, class Fn>
-static inline void ForEachTLATask(Threads& threads, Fn&& fn) {
-  for (size_t tid = 0; tid < threads.size(); ++tid) {
-    auto& thread = threads[tid];
-    for (size_t task_index = 0; task_index < thread.tasks.size();
-         ++task_index) {
-      fn(tid, task_index, thread.tasks[task_index]);
-    }
-  }
-}
-
-template <class Threads, class Fn>
-static inline void ForEachTLATask(const Threads& threads, Fn&& fn) {
-  for (size_t tid = 0; tid < threads.size(); ++tid) {
-    const auto& thread = threads[tid];
-    for (size_t task_index = 0; task_index < thread.tasks.size();
-         ++task_index) {
-      fn(tid, task_index, thread.tasks[task_index]);
-    }
-  }
-}
-
-template <class Threads>
-static inline bool HasUnfinishedTLATasks(const Threads& threads) {
-  bool has_unfinished = false;
-  ForEachTLATask(threads, [&](size_t, size_t, const Task& task) {
-    has_unfinished = has_unfinished || !task->IsReturned();
-  });
-  return has_unfinished;
-}
-
-template <class Threads>
-static inline size_t FindTLATaskThread(const Threads& threads,
-                                       const Task& needle) {
-  for (size_t tid = 0; tid < threads.size(); ++tid) {
-    for (size_t task_index = 0; task_index < threads[tid].tasks.size();
-         ++task_index) {
-      const auto& task = threads[tid].tasks[task_index];
-      if (task.get() == needle.get()) {
-        return tid;
-      }
-    }
-  }
-  assert(false && "task not found in TLA scheduler");
-  return 0;
-}
-
-template <class Threads>
-static inline ltest::StartContext BuildTLAStartContext(const Threads& threads) {
-  ltest::StartContext ctx{};
-  ctx.threads = threads.size();
-
-  for (size_t tid = 0; tid < threads.size(); ++tid) {
-    const auto& thread = threads[tid];
-    bool has_active_task = false;
-    if (!thread.tasks.empty()) {
-      const auto& task = thread.tasks.back();
-      if (!task->IsReturned()) {
-        has_active_task = true;
-        std::string name = std::string(task->GetName());
-        ctx.active_by_method[name]++;
-        if (task->IsBlocked()) {
-          ctx.blocked_by_method[name]++;
-        }
-      }
-    }
-
-    if (!has_active_task) {
-      ctx.free_threads++;
-    }
-  }
-
-  return ctx;
 }
 
 static inline void AppendDualStartEvent(std::vector<DualHistoryEvent>& seq,
@@ -1450,7 +875,7 @@ struct StrategyScheduler : public SchedulerWithReplay {
 
       if (histories.has_value()) {
         auto& [full_history, sequential_history, reason] = histories.value();
-        int threads_num = GetStartegyThreadsCount();
+        int threads_num = GetStrategyThreadsCount();
 
         if (should_minimize_history) {
           log() << "Full nonlinear scenario: \n";
@@ -1490,7 +915,7 @@ struct StrategyScheduler : public SchedulerWithReplay {
     return std::nullopt;
   }
 
-  int GetStartegyThreadsCount() const override {
+  size_t GetStrategyThreadsCount() const override {
     return strategy.GetThreadsCount();
   }
 
@@ -1522,12 +947,24 @@ struct StrategyScheduler : public SchedulerWithReplay {
       }
 
       auto t = strategy.Next();
-      if (!t.has_value()) {
-        deadlock_detected = true;
-        break;
+      if (auto f = std::get_if<StrategyNextScheduleFailure>(&t)) {
+        if (*f == DEADLOCK) {
+          deadlock_detected = true;
+          break;
+        }
+        if (*f == NEED_REPLAY) {
+          log() << "restarted round\n";
+          strategy.StartNextRound();
+          sequential_history.clear();
+          full_history.clear();
+          finished_tasks = 0;
+          continue;
+        }
+        if (*f == EXHAUSTED_INTERLEAVINGS) {
+          return std::nullopt;
+        }
       }
-      auto [next_task, is_new, thread_id] = t.value();
-
+      auto [next_task, is_new, thread_id] = std::get<TaskWithMetaData>(t);
       next_task->clearWakeupCondition();
 
       // fill the sequential history
@@ -1547,7 +984,7 @@ struct StrategyScheduler : public SchedulerWithReplay {
       }
     }
 
-    pretty_printer.PrettyPrint(sequential_history, GetStartegyThreadsCount(),
+    pretty_printer.PrettyPrint(sequential_history, GetStrategyThreadsCount(),
                                log());
 
     if (deadlock_detected) {
@@ -1602,11 +1039,14 @@ struct StrategyScheduler : public SchedulerWithReplay {
       for (int tasks_to_run = strategy.GetValidTasksCount();
            tasks_to_run > 0;) {
         auto t = strategy.NextSchedule();
-        if (!t.has_value()) {
-          deadlock_detected = true;
-          break;
+        if (auto f = std::get_if<StrategyNextScheduleFailure>(&t)) {
+          if (*f == DEADLOCK) {
+            deadlock_detected = true;
+            break;
+          }
         }
-        auto [next_task, is_new, thread_id] = t.value();
+
+        auto [next_task, is_new, thread_id] = std::get<TaskWithMetaData>(t);;
         (void)is_new;
 
         const bool first_start_in_explore =
@@ -1616,7 +1056,7 @@ struct StrategyScheduler : public SchedulerWithReplay {
           auto ctx = BuildReplayStartContext(strategy, started_ids);
 
           if (!strategy.VerifyTaskStart(next_task,
-                                        static_cast<size_t>(thread_id), ctx)) {
+                                        thread_id, ctx)) {
             deadlock_detected = true;
             break;
           }
@@ -1646,7 +1086,7 @@ struct StrategyScheduler : public SchedulerWithReplay {
 
       if (log_each_interleaving) {
         pretty_printer.PrettyPrint(sequential_history,
-                                   GetStartegyThreadsCount(), log());
+                                   GetStrategyThreadsCount(), log());
         log() << "\n";
       }
 
@@ -1748,7 +1188,7 @@ struct StrategyScheduler : public SchedulerWithReplay {
       const bool is_last = (last_pos[next_task_id] == step);
 
       if (mode == ReplayMode::CompleteOnLast && is_last) {
-        next_task->Terminate(thread_id);
+        next_task->Terminate();
       } else {
         next_task->Resume(thread_id);
       }
@@ -1818,636 +1258,6 @@ struct StrategyScheduler : public SchedulerWithReplay {
   DeadlockPolicy deadlock_policy;
 };
 
-// TLAScheduler generates all executions satisfying some conditions.
-template <typename TargetObj, StrategyTaskVerifier Verifier>
-struct TLAScheduler : Scheduler {
-  using TargetFactory = std::function<std::unique_ptr<TargetObj>()>;
-
-  TLAScheduler(size_t max_tasks, size_t max_rounds, size_t threads_count,
-               size_t max_switches, size_t max_depth,
-               std::vector<TaskBuilder> constructors, ModelChecker& checker,
-               PrettyPrinter& pretty_printer, std::function<void()> cancel_func,
-               TargetFactory target_factory)
-      : max_tasks{max_tasks},
-        max_rounds{max_rounds},
-        max_switches{max_switches},
-        constructors{std::move(constructors)},
-        checker{checker},
-        pretty_printer{pretty_printer},
-        max_depth(max_depth),
-        cancel(cancel_func),
-        target_factory(std::move(target_factory)) {
-    InitTLAThreads(threads, threads_count);
-    state = this->target_factory();
-  };
-
-  Scheduler::Result Run() override {
-    auto [_, res] = RunStep(0, 0);
-    return res;
-  }
-
-  ~TLAScheduler() { TerminateTasks(); }
-
- private:
-  using Thread = TLAThread;
-
-  // TLAScheduler enumerates all possible executions with finished max_tasks.
-  // In fact, it enumerates tables (c = continue, f = finished):
-  //         *---------*---------*--------*
-  //         |   T1    |   T2    |   T3   |
-  //         *---------*---------*--------*
-  // state0  | task_i  |         |        |
-  // state1  |    c    |         |        |
-  // state2  |         | task_j  |        |
-  // ...     |         |    c    |        |
-  //         |    f    |         |        |
-  //                      .....
-  // Frame struct describes one row of this table.
-  using Frame = TLAFrame;
-
-  // Terminates all running tasks.
-  // We do it in a dangerous way: in random order.
-  // Actually, we assume obstruction free here.
-  // cancel() func takes care for graceful shutdown
-  void TerminateTasks() {
-    cancel();
-    ForEachTLATask(threads, [](size_t thread_id, size_t, Task& task) {
-      if (!task->IsReturned()) {
-        task->Terminate(thread_id);
-      }
-    });
-  }
-
-  // Replays all actions from 0 to the step_end.
-  void Replay(size_t step_end) {
-    // Firstly, terminate all running tasks.
-    TerminateTasks();
-    // In histories we store references, so there's no need to update it.
-    state = target_factory();
-    for (size_t step = 0; step < step_end; ++step) {
-      auto& frame = frames[step];
-      auto task = frame.task;
-      assert(task);
-      if (frame.is_new) {
-        // It was a new task.
-        // So restart it from the beginning with the same args.
-        *task = (*task)->Restart(state.get());
-      } else {
-        // It was a not new task, hence, we recreated in early.
-      }
-      (*task)->Resume(frame.thread_id);
-    }
-    coroutine_status.reset();
-  }
-
-  void UpdateFullHistory(size_t thread_id, Task& task, bool is_new) {
-    if (coroutine_status.has_value()) {
-      if (is_new) {
-        assert(coroutine_status->has_started);
-        full_history.emplace_back(thread_id, task);
-      }
-      // To prevent cases like this
-      //  +--------+--------+
-      //  |   T1   |   T2   |
-      //  +--------+--------+
-      //  |        | Recv   |
-      //  | Send   |        |
-      //  |        | >read  |
-      //  | >flush |        |
-      //  +--------+--------+
-      full_history.emplace_back(thread_id, coroutine_status.value());
-      coroutine_status.reset();
-    } else {
-      full_history.emplace_back(thread_id, task);
-    }
-  }
-  // Resumes choosed task.
-  // If task is finished and finished tasks == max_tasks, stops.
-  std::tuple<bool, typename Scheduler::Result> ResumeTask(
-      Frame& frame, size_t step, size_t switches, Thread& thread, bool is_new) {
-    auto thread_id = thread.id;
-    size_t previous_thread_id = thread_id_history.empty()
-                                    ? std::numeric_limits<size_t>::max()
-                                    : thread_id_history.back();
-    size_t nxt_switches = switches;
-    if (!is_new) {
-      if (thread_id != previous_thread_id) {
-        ++nxt_switches;
-      }
-      if (nxt_switches > max_switches) {
-        // The limit of switches is achieved.
-        // So, do not resume task.
-        return {false, {}};
-      }
-    }
-    auto& task = thread.tasks.back();
-    frame.task = &task;
-    frame.thread_id = thread_id;
-
-    thread_id_history.push_back(thread_id);
-    if (is_new) {
-      sequential_history.emplace_back(Invoke(task, thread_id));
-    }
-
-    assert(!task->IsBlocked());
-    task->Resume(thread_id);
-    UpdateFullHistory(thread_id, task, is_new);
-    bool is_finished = task->IsReturned();
-    if (is_finished) {
-      finished_tasks++;
-      verifier.OnFinished(task, thread.id);
-      auto result = task->GetRetVal();
-      sequential_history.emplace_back(Response(task, result, thread_id));
-    }
-
-    bool stop = finished_tasks == max_tasks;
-    if (!stop) {
-      // Run recursive step.
-      auto [is_over, res] = RunStep(step + 1, nxt_switches);
-      if (is_over || res.has_value()) {
-        return {is_over, res};
-      }
-    } else {
-      log() << "run round: " << finished_rounds << "\n";
-      pretty_printer.PrettyPrint(full_history, GetStartegyThreadsCount(),
-                                 log());
-      log() << "===============================================\n\n";
-      log().flush();
-      // Stop, check if the the generated history is linearizable.
-      ++finished_rounds;
-      if (!checker.Check(sequential_history)) {
-        return {false,
-                NonLinearizableHistory(
-                    FullHistory{}, sequential_history,
-                    NonLinearizableHistory::Reason::NON_LINEARIZABLE_HISTORY)};
-      }
-      if (finished_rounds == max_rounds) {
-        // It was the last round.
-        return {true, {}};
-      }
-    }
-
-    thread_id_history.pop_back();
-    // Removing combination of start of task + coroutine start
-    if (full_history.back().second.index() == 1) {
-      auto& cor = std::get<1>(full_history.back().second);
-      auto& prev = full_history[full_history.size() - 2];
-      int thread = full_history.back().first;
-      auto first_ind =
-          std::find_if(full_history.begin(), --full_history.end(),
-                       [&thread](auto& a) { return a.first == thread; });
-      if (cor.has_started &&
-          std::distance(full_history.begin(), first_ind) ==
-              full_history.size() - 2 &&
-          prev.second.index() == 0) {
-        full_history.pop_back();
-      }
-    }
-    full_history.pop_back();
-    if (is_finished) {
-      --finished_tasks;
-      // resp.
-      sequential_history.pop_back();
-    }
-    if (is_new) {
-      // inv.
-      --started_tasks;
-      sequential_history.pop_back();
-    }
-
-    return {false, {}};
-  }
-
-  std::tuple<bool, typename Scheduler::Result> RunStep(size_t step,
-                                                       size_t switches) {
-    // Push frame to the stack.
-    frames.emplace_back(Frame{});
-    auto& frame = frames.back();
-
-    bool all_parked = true;
-    // Pick next task.
-    for (size_t i = 0; i < threads.size(); ++i) {
-      auto& thread = threads[i];
-      auto& tasks = thread.tasks;
-      if (!tasks.empty() && !tasks.back()->IsReturned()) {
-        if (tasks.back()->IsBlocked()) {
-          continue;
-        }
-        all_parked = false;
-        if (!verifier.Verify(std::string{tasks.back()->GetName()}, i)) {
-          continue;
-        }
-        // Task exists.
-        frame.is_new = false;
-        auto [is_over, res] = ResumeTask(frame, step, switches, thread, false);
-        if (is_over || res.has_value()) {
-          return {is_over, res};
-        }
-        // As we can't return to the past in coroutine, we need to replay all
-        // tasks from the beginning.
-        Replay(step);
-        continue;
-      }
-
-      all_parked = false;
-      // Choose constructor to create task.
-      bool stop = started_tasks == max_tasks;
-      if (!stop && threads[i].tasks.size() < max_depth) {
-        for (auto cons : constructors) {
-          if (!verifier.Verify(cons.GetName(), i)) {
-            continue;
-          }
-          frame.is_new = true;
-          auto size_before = tasks.size();
-          tasks.emplace_back(
-              cons.Build(state.get(), i, static_cast<int>(next_task_id++)));
-          started_tasks++;
-          auto [is_over, res] = ResumeTask(frame, step, switches, thread, true);
-          if (is_over || res.has_value()) {
-            return {is_over, res};
-          }
-          // As we can't return to the past in coroutine, we need to replay all
-          // tasks from the beginning.
-          Replay(step);
-          tasks.pop_back();
-          auto size_after = thread.tasks.size();
-          assert(size_before == size_after);
-        }
-      }
-    }
-
-    assert(!all_parked && "deadlock");
-    frames.pop_back();
-    return {false, {}};
-  }
-
-  int GetStartegyThreadsCount() const override { return threads.size(); }
-
-  PrettyPrinter& pretty_printer;
-  size_t max_tasks;
-  size_t max_rounds;
-  size_t max_switches;
-  size_t max_depth;
-
-  std::vector<TaskBuilder> constructors;
-  ModelChecker& checker;
-
-  // Running state.
-  size_t started_tasks{};
-  size_t finished_tasks{};
-  size_t finished_rounds{};
-  std::unique_ptr<TargetObj> state;
-  std::vector<std::variant<Invoke, Response>> sequential_history;
-  FullHistoryWithThreads full_history;
-  std::vector<size_t> thread_id_history;
-  StableVector<Thread> threads;
-  StableVector<Frame> frames;
-  Verifier verifier{};
-  std::function<void()> cancel;
-  TargetFactory target_factory;
-  size_t next_task_id{};
-};
-
-// DualTLAScheduler enumerates interleavings for dual histories. Unlike the
-// ordinary TLA scheduler it bounds started operations, because pending dual
-// requests are meaningful history, especially for deadlock checking.
-template <typename TargetObj, StrategyTaskVerifier Verifier>
-struct DualTLAScheduler : DualScheduler {
-  using TargetFactory = std::function<std::unique_ptr<TargetObj>()>;
-
-  DualTLAScheduler(size_t max_tasks, size_t max_rounds, size_t threads_count,
-                   size_t max_switches, size_t max_depth,
-                   std::vector<TaskBuilder> constructors,
-                   DualLinearizabilityChecker& checker,
-                   PrettyPrinter& pretty_printer,
-                   DeadlockPolicy deadlock_policy,
-                   TargetFactory target_factory)
-      : max_tasks{max_tasks},
-        max_rounds{max_rounds},
-        max_switches{max_switches},
-        max_depth(max_depth == 0 ? max_tasks : max_depth),
-        constructors{std::move(constructors)},
-        checker{checker},
-        pretty_printer{pretty_printer},
-        deadlock_policy{deadlock_policy},
-        target_factory(std::move(target_factory)) {
-    InitTLAThreads(threads, threads_count);
-    state = this->target_factory();
-    ltest::verifier_hooks::OnRoundStart(verifier, threads.size());
-  }
-
-  ~DualTLAScheduler() override {
-    TerminateTasks();
-    DestroyStateAndCleanupTasks();
-  }
-
-  DualScheduler::Result Run() override {
-    auto [_, res] = RunStep(0, 0);
-    return res;
-  }
-
-  int GetStartegyThreadsCount() const override {
-    return static_cast<int>(threads.size());
-  }
-
- private:
-  using Thread = TLAThread;
-  using Frame = TLAFrame;
-
-  void TerminateTasks() {
-    const bool old_terminating = ltest_round_terminating;
-    ltest_round_terminating = true;
-
-    ForEachTLATask(threads, [](size_t thread_id, size_t, Task& task) {
-      if (!task->IsReturned()) {
-        task->Terminate(thread_id);
-      }
-    });
-    DiscardDrainedDualEvents(threads);
-
-    block_manager.queues.clear();
-    ltest_round_terminating = old_terminating;
-  }
-
-  void CleanupTasks() {
-    ForEachTLATask(threads, [](size_t, size_t, Task& task) {
-      if (task->CleanupBeforeTargetDestroy()) {
-        task->RunDeferredCleanup();
-      }
-    });
-  }
-
-  void DestroyStateAndCleanupTasks() {
-    const bool old_terminating = ltest_round_terminating;
-    ltest_round_terminating = true;
-
-    state.reset();
-    CleanupTasks();
-    ForEachTLATask(threads, [](size_t, size_t, Task& task) {
-      if (!task->CleanupBeforeTargetDestroy()) {
-        task->RunDeferredCleanup();
-      }
-    });
-    block_manager.queues.clear();
-
-    ltest_round_terminating = old_terminating;
-  }
-
-  void Replay(size_t step_end) {
-    TerminateTasks();
-    DestroyStateAndCleanupTasks();
-    state = target_factory();
-    block_manager.queues.clear();
-    coroutine_status.reset();
-    ltest::verifier_hooks::OnRoundStart(verifier, threads.size());
-
-    for (size_t step = 0; step < step_end; ++step) {
-      auto& frame = frames[step];
-      auto* task_ptr = frame.task;
-      assert(task_ptr);
-
-      if (frame.is_new) {
-        *task_ptr = (*task_ptr)->Restart(state.get());
-        size_t thread_id = FindTLATaskThread(threads, *task_ptr);
-        ltest::verifier_hooks::OnTaskStarted(
-            verifier, std::string((*task_ptr)->GetName()), thread_id,
-            (*task_ptr)->GetId());
-      }
-
-      size_t thread_id = FindTLATaskThread(threads, *task_ptr);
-      (*task_ptr)->Resume(thread_id);
-      DiscardDrainedDualEvents(threads);
-
-      if ((*task_ptr)->IsReturned()) {
-        verifier.OnFinished(*task_ptr, thread_id);
-      }
-    }
-  }
-
-  bool CompletedStartedPrefix() const {
-    return started_tasks == max_tasks && !HasUnfinishedTLATasks(threads);
-  }
-
-  std::tuple<bool, DualScheduler::Result> CheckCompletedPrefix() {
-    if (!CompletedStartedPrefix()) {
-      return {false, std::nullopt};
-    }
-
-    log() << "\nrun round: " << finished_rounds << "\n\n";
-    pretty_printer.PrettyPrint(sequential_history,
-                               static_cast<int>(threads.size()), log());
-    log() << "===============================================\n\n";
-    log().flush();
-
-    ++finished_rounds;
-    if (!checker.Check(sequential_history)) {
-      return {false, DualScheduler::NonLinearizableHistory{
-                         full_history, sequential_history,
-                         DualScheduler::NonLinearizableHistory::Reason::
-                             NON_LINEARIZABLE_HISTORY}};
-    }
-
-    if (finished_rounds == max_rounds) {
-      return {true, std::nullopt};
-    }
-
-    return {false, std::nullopt};
-  }
-
-  std::tuple<bool, DualScheduler::Result> HandleNoBranch() {
-    if (!HasUnfinishedTLATasks(threads)) {
-      return {false, std::nullopt};
-    }
-
-    if (!checker.Check(sequential_history)) {
-      return {false, DualScheduler::NonLinearizableHistory{
-                         full_history, sequential_history,
-                         DualScheduler::NonLinearizableHistory::Reason::
-                             NON_LINEARIZABLE_HISTORY}};
-    }
-
-    if (deadlock_policy != DeadlockPolicy::Fail ||
-        !IsReportableDeadlockHistory(sequential_history)) {
-      return {false, std::nullopt};
-    }
-
-    return {false,
-            DualScheduler::NonLinearizableHistory{
-                full_history, sequential_history,
-                DualScheduler::NonLinearizableHistory::Reason::DEADLOCK}};
-  }
-
-  std::tuple<bool, DualScheduler::Result> ResumeTask(Frame& frame, size_t step,
-                                                     size_t switches,
-                                                     Thread& thread,
-                                                     bool is_new) {
-    const size_t thread_id = thread.id;
-    const size_t previous_thread_id = thread_id_history.empty()
-                                          ? std::numeric_limits<size_t>::max()
-                                          : thread_id_history.back();
-    size_t next_switches = switches;
-    if (!is_new && thread_id != previous_thread_id) {
-      ++next_switches;
-      if (next_switches > max_switches) {
-        return {false, std::nullopt};
-      }
-    }
-
-    auto& task = thread.tasks.back();
-    frame.task = &task;
-
-    const size_t seq_size = sequential_history.size();
-    const size_t full_size = full_history.size();
-
-    thread_id_history.push_back(thread_id);
-    if (is_new) {
-      ++started_tasks;
-    }
-
-    AppendDualStartEvent(sequential_history, task, is_new,
-                         static_cast<int>(thread_id));
-    full_history.emplace_back(task);
-
-    assert(!task->IsBlocked());
-    task->Resume(thread_id);
-    AppendDrainedDualEvents(sequential_history, threads);
-
-    bool finished_now = task->IsReturned();
-    if (finished_now) {
-      ++finished_tasks;
-      verifier.OnFinished(task, thread_id);
-      if (!task->IsDual()) {
-        sequential_history.emplace_back(
-            Response(task, task->GetRetVal(), static_cast<int>(thread_id)));
-      }
-    }
-
-    auto [is_done, completed_result] = CheckCompletedPrefix();
-    if (is_done || completed_result.has_value()) {
-      return {is_done, completed_result};
-    }
-
-    auto [is_over, nested_result] = RunStep(step + 1, next_switches);
-    if (is_over || nested_result.has_value()) {
-      return {is_over, nested_result};
-    }
-
-    thread_id_history.pop_back();
-    if (finished_now) {
-      --finished_tasks;
-    }
-    if (is_new) {
-      --started_tasks;
-    }
-
-    sequential_history.erase(sequential_history.begin() + seq_size,
-                             sequential_history.end());
-    full_history.erase(full_history.begin() + full_size, full_history.end());
-
-    return {false, std::nullopt};
-  }
-
-  std::tuple<bool, DualScheduler::Result> RunStep(size_t step,
-                                                  size_t switches) {
-    frames.emplace_back(Frame{});
-    auto& frame = frames.back();
-    bool explored_branch = false;
-
-    for (size_t tid = 0; tid < threads.size(); ++tid) {
-      auto& thread = threads[tid];
-      auto& tasks = thread.tasks;
-      if (tasks.empty() || tasks.back()->IsReturned() ||
-          tasks.back()->IsBlocked()) {
-        continue;
-      }
-
-      if (!verifier.Verify(std::string(tasks.back()->GetName()), thread.id)) {
-        continue;
-      }
-
-      frame.is_new = false;
-      explored_branch = true;
-
-      auto [is_over, res] = ResumeTask(frame, step, switches, thread, false);
-      if (is_over || res.has_value()) {
-        return {is_over, res};
-      }
-
-      Replay(step);
-    }
-
-    if (started_tasks < max_tasks) {
-      for (size_t tid = 0; tid < threads.size(); ++tid) {
-        auto& thread = threads[tid];
-        auto& tasks = thread.tasks;
-        if (!tasks.empty() && !tasks.back()->IsReturned()) {
-          continue;
-        }
-        if (tasks.size() >= max_depth) {
-          continue;
-        }
-
-        for (const auto& cons : constructors) {
-          auto ctx = BuildTLAStartContext(threads);
-          if (!ltest::verifier_hooks::VerifyStart(verifier, cons.GetName(),
-                                                  thread.id, ctx) ||
-              !verifier.Verify(cons.GetName(), thread.id)) {
-            continue;
-          }
-
-          frame.is_new = true;
-          const auto size_before = tasks.size();
-          tasks.emplace_back(
-              cons.Build(state.get(), thread.id, next_task_id++));
-          ltest::verifier_hooks::OnTaskStarted(
-              verifier, cons.GetName(), thread.id, tasks.back()->GetId());
-
-          explored_branch = true;
-          auto [is_over, res] = ResumeTask(frame, step, switches, thread, true);
-          if (is_over || res.has_value()) {
-            return {is_over, res};
-          }
-
-          Replay(step);
-          tasks.pop_back();
-          assert(size_before == tasks.size());
-        }
-      }
-    }
-
-    if (!explored_branch) {
-      auto [is_over, res] = HandleNoBranch();
-      if (is_over || res.has_value()) {
-        return {is_over, res};
-      }
-    }
-
-    frames.pop_back();
-    return {false, std::nullopt};
-  }
-
-  size_t max_tasks;
-  size_t max_rounds;
-  size_t max_switches;
-  size_t max_depth;
-  std::vector<TaskBuilder> constructors;
-  DualLinearizabilityChecker& checker;
-  PrettyPrinter& pretty_printer;
-  DeadlockPolicy deadlock_policy;
-
-  size_t next_task_id{};
-  size_t started_tasks{};
-  size_t finished_tasks{};
-  size_t finished_rounds{};
-  std::unique_ptr<TargetObj> state;
-  DualScheduler::SeqHistory sequential_history;
-  DualScheduler::FullHistory full_history;
-  std::vector<size_t> thread_id_history;
-  StableVector<Thread> threads;
-  StableVector<Frame> frames;
-  Verifier verifier{};
-  TargetFactory target_factory;
-};
 
 // DualStrategyScheduler builds dual histories and supports replay/minimization.
 template <StrategyTaskVerifier Verifier>
@@ -2473,7 +1283,7 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
       log() << "\nrun round: " << i << "\n\n";
       auto res = RunRound();
       if (res.has_value()) {
-        int threads_num = GetStartegyThreadsCount();
+        int threads_num = GetStrategyThreadsCount();
         if (should_minimize_history) {
           log() << "Full nonlinear scenario (DUAL):\n";
           pretty_printer.PrettyPrint(res->seq, threads_num, log());
@@ -2512,7 +1322,7 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
     return std::nullopt;
   }
 
-  int GetStartegyThreadsCount() const override {
+  size_t GetStrategyThreadsCount() const override {
     return strategy.GetThreadsCount();
   }
 
@@ -2687,11 +1497,18 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
       }
 
       auto t = strategy.Next();
-      if (!t.has_value()) {
-        deadlock_detected = true;
-        break;
+      if (auto f = std::get_if<StrategyNextScheduleFailure>(&t)) {
+        if (*f == DEADLOCK) {
+          deadlock_detected = true;
+          break;
+        }
+        if (*f == NEED_REPLAY) {
+          log() << "restarted round\n";
+          strategy.StartNextRound();
+          continue;
+        }
       }
-      auto [task, is_new, thread_id_sz] = t.value();
+      auto [task, is_new, thread_id_sz] = std::get<TaskWithMetaData>(t);
       int thread_id = static_cast<int>(thread_id_sz);
 
       EmitStartEvent(seq, task, is_new, thread_id);
@@ -2714,7 +1531,7 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
       }
     }
 
-    pretty_printer.PrettyPrint(seq, GetStartegyThreadsCount(), log());
+    pretty_printer.PrettyPrint(seq, GetStrategyThreadsCount(), log());
 
     if (deadlock_detected) {
       return HandleDeadlock(full, seq);
@@ -2746,12 +1563,14 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
       for (int tasks_to_run = strategy.GetValidTasksCount();
            tasks_to_run > 0;) {
         auto t = strategy.NextSchedule();
-        if (!t.has_value()) {
-          deadlock_detected = true;
-          break;
+        if (auto f = std::get_if<StrategyNextScheduleFailure>(&t)) {
+          if (*f == DEADLOCK) {
+            deadlock_detected = true;
+            break;
+          }
         }
 
-        auto [task, is_new, thread_id_sz] = t.value();
+        auto [task, is_new, thread_id_sz] = std::get<TaskWithMetaData>(t);;
         int thread_id = static_cast<int>(thread_id_sz);
 
         const bool first_start_in_explore =
@@ -2817,7 +1636,7 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
       }
 
       if (log_each_interleaving) {
-        pretty_printer.PrettyPrint(seq, GetStartegyThreadsCount(), log());
+        pretty_printer.PrettyPrint(seq, GetStrategyThreadsCount(), log());
         log() << "\n";
       }
 
@@ -2909,10 +1728,10 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
         if (task->IsDual()) {
           bool old_terminating = ltest_round_terminating;
           ltest_round_terminating = true;
-          task->Terminate(thread_id);
+          task->Terminate();
           ltest_round_terminating = old_terminating;
         } else {
-          task->Terminate(thread_id);
+          task->Terminate();
         }
       } else {
         task->Resume(thread_id);

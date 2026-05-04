@@ -27,7 +27,9 @@ struct RoundRobinStrategy : PickStrategy<TargetObj, Verifier> {
       const bool is_free = threads[cur].empty() || threads[cur].back()->IsReturned();
       if (!this->AllowNewTasks() && is_free) continue;
 
-      if (!threads[cur].empty() && threads[cur].back()->IsBlocked()) {
+      if ((!threads[cur].empty() && threads[cur].back()->IsBlocked()) ||
+          !this->CanThreadContinue(cur) ||
+          !this->NewTaskAreEnabled(cur)) {
         continue;
       }
       if (!is_free && !this->VerifyExistingTask(threads[cur].back(), cur)) {

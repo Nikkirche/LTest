@@ -59,4 +59,22 @@ struct UniqueArgsOptionsOverride {
   }
 };
 
+struct UniqueArgsVerifier {
+  bool Verify(const std::string &, size_t thread_id, bool is_new) {
+    if (is_new && status[thread_id]) {
+      return false;
+    }
+    status[thread_id] = true;
+    return true;
+  }
+
+  void OnFinished(Task &, size_t) {
+    // intentionally do nothing
+  }
+
+  void Reset() { status.fill(false); }
+
+  std::array<bool, limit> status;
+};
+
 }  // namespace spec

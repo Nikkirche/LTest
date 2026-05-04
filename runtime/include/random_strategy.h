@@ -35,6 +35,9 @@ struct RandomStrategy : PickStrategy<TargetObj, Verifier> {
       if (!is_free && !this->VerifyExistingTask(threads[i].back(), i)) {
         return false;
       }
+      if (!this->CanThreadContinue(i) || !this->NewTaskAreEnabled(i)) {
+        return false;
+      }
       return true;
     };
 

@@ -21,6 +21,8 @@
 struct CoroBase;
 struct CoroutineStatus;
 
+extern bool ltest_initialized;
+
 // Current executing coroutine.
 extern std::shared_ptr<CoroBase> this_coro;
 extern int this_thread_id;
@@ -71,7 +73,7 @@ struct CoroBase : public std::enable_shared_from_this<CoroBase> {
   virtual std::shared_ptr<CoroBase> Restart(void* this_ptr) = 0;
 
   // Resume the coroutine to the next yield.
-  void Resume(int resumed_thread_id);
+  void Resume(size_t resumed_thread_id);
 
   // Check if the coroutine is returned.
   bool IsReturned() const;
@@ -99,6 +101,7 @@ struct CoroBase : public std::enable_shared_from_this<CoroBase> {
   int GetId() const;
 
   virtual ValueWrapper GetRetVal() const;
+  virtual void TerminateWith(const ValueWrapper& value);
   virtual std::string_view GetName() const;
 
   virtual std::vector<std::string> GetStrArgs() const = 0;
@@ -106,11 +109,8 @@ struct CoroBase : public std::enable_shared_from_this<CoroBase> {
 
   std::shared_ptr<CoroBase> GetPtr();
 
-  // Try to terminate the coroutine.
-  void TryTerminate(int running_thread_id);
-
   // Terminate the coroutine.
-  void Terminate(int running_thread_id);
+  void Terminate();
 
   void SetBlocked(const BlockState& state) {
     fstate = state;

@@ -18,6 +18,7 @@ int this_thread_id = -1;
 
 boost::context::fiber_context sched_ctx;
 std::optional<CoroutineStatus> coroutine_status;
+bool ltest_initialized = false;
 bool ltest_round_terminating = false;
 
 namespace {
@@ -108,7 +109,7 @@ std::vector<CoroBase::DualEvent> CoroBase::DrainDualEvents() {
   return out;
 }
 
-void CoroBase::Resume(int resumed_thread_id) {
+void CoroBase::Resume(size_t resumed_thread_id) {
   ltest::DrainExternalResumes();
   this_coro = this->GetPtr();
   this_thread_id = resumed_thread_id;
@@ -197,9 +198,6 @@ extern "C" void CoroYield() {
   if (!ltest_coro_ctx) [[unlikely]] {
     return;
   }
-  //
-  // ReleaseWithAser <-
-  // shared_ptr<CoroBase>
   assert(this_coro && sched_ctx);
   boost::context::fiber_context([](boost::context::fiber_context&& ctx) {
     this_coro->ctx = std::move(ctx);
@@ -213,18 +211,12 @@ extern "C" void CoroutineStatusChange(char* name, bool start) {
   CoroYield();
 }
 
-void CoroBase::Terminate(int running_thread_id) {
-  int tries = 0;
-  while (!IsReturned()) {
-    ++tries;
-    Resume(running_thread_id);
-    assert(tries < 1000000 &&
-           "coroutine is spinning too long, possible wrong terminating order");
-  }
+void CoroBase::Terminate() {
+  finish_kind_ = FinishKind::ReturnedNormally;
+  fstate = {};
 }
 
-void CoroBase::TryTerminate(int running_thread_id) {
-  for (size_t i = 0; i < 1000 && !IsReturned(); ++i) {
-    Resume(running_thread_id);
-  }
+void CoroBase::TerminateWith(const ValueWrapper& value) {
+  Terminate();
+  ret = value;
 }
