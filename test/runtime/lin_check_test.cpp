@@ -39,7 +39,7 @@ std::shared_ptr<CoroBase> CreateMockTask(std::string name, int ret_val,
   EXPECT_CALL(*mock, GetArgs())
       .Times(testing::AnyNumber())
       .WillRepeatedly(testing::Return(args));
-  mock->MarkFinishedNormally();
+  mock->Terminate();
 
   return static_pointer_cast<CoroBase>(mock);
 }
@@ -342,7 +342,7 @@ class DualTestTask final : public CoroBase {
     id = task_id;
     name = owned_name_;
     ret = std::move(ret_val);
-    MarkFinishedNormally();
+    returned = true;
   }
 
   std::shared_ptr<CoroBase> Restart([[maybe_unused]] void* this_ptr) override {

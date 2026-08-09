@@ -384,12 +384,12 @@ inline int TrapRunDual(std::unique_ptr<DualScheduler> &&scheduler,
 template <class Spec,
           StrategyTaskVerifier Verifier = typename Spec::verifier_t>
 int Run(int argc, char *argv[], std::vector<CustomRound> custom_rounds = {}) {
-  ltest_initialized = true;
   if constexpr (!std::is_same_v<typename Spec::options_override_t,
                                 ltest::NoOverride>) {
     SetOpts(Spec::options_override_t::GetOptions());
   }
   gflags::ParseCommandLineFlags(&argc, &argv, true);
+  ltest_initialized = true;
   Opts opts = ParseOpts();
 
   logger_init(opts.verbose);
@@ -428,12 +428,12 @@ int Run(int argc, char *argv[], std::vector<CustomRound> custom_rounds = {}) {
 template <class SpecDual,
           StrategyTaskVerifier Verifier = typename SpecDual::verifier_t>
 int RunDual(int argc, char *argv[]) {
-  ltest_initialized = true;
   if constexpr (!std::is_same_v<typename SpecDual::options_override_t,
                                 ltest::NoOverride>) {
     SetOpts(SpecDual::options_override_t::GetOptions());
   }
   gflags::ParseCommandLineFlags(&argc, &argv, true);
+  ltest_initialized = true;
   Opts opts = ParseOpts();
 
   logger_init(opts.verbose);
