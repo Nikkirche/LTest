@@ -119,25 +119,7 @@ CoroBase::~CoroBase() {
 
 std::string_view CoroBase::GetName() const { return name; }
 
-bool CoroBase::IsReturned() const { return finish_kind_ != FinishKind::Running; }
-
-CoroBase::FinishKind CoroBase::GetFinishKind() const {
-  return finish_kind_;
-}
-
-bool CoroBase::FinishedNormally() const {
-  return finish_kind_ == FinishKind::ReturnedNormally;
-}
-
-void CoroBase::MarkFinishedNormally() {
-  finish_kind_ = FinishKind::ReturnedNormally;
-}
-
-void CoroBase::MarkFinishedNormallyIfRunning() {
-  if (!IsReturned()) {
-    MarkFinishedNormally();
-  }
-}
+bool CoroBase::IsReturned() const { return returned; }
 
 extern "C" void CoroYield() {
   if (!ltest_coro_ctx) [[unlikely]] {
@@ -165,7 +147,7 @@ void CoroBase::DestroyContext() {
 }
 
 void CoroBase::Terminate() {
-  finish_kind_ = FinishKind::ReturnedNormally;
+  returned = true;
   fstate = {};
   clearWakeupCondition();
   DestroyContext();

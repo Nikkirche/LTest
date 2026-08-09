@@ -66,17 +66,6 @@ struct CoroBase : public std::enable_shared_from_this<CoroBase> {
   // Check if the coroutine is returned.
   bool IsReturned() const;
 
-  enum class FinishKind : std::uint8_t {
-    Running = 0,
-    ReturnedNormally = 1,
-  };
-
-  FinishKind GetFinishKind() const;
-  bool FinishedNormally() const;
-
-  void MarkFinishedNormally();
-  void MarkFinishedNormallyIfRunning();
-
   void setWakeupCondition(std::function<bool()> cond);
   void clearWakeupCondition();
   bool hasWakeupCondition() const;
@@ -162,7 +151,7 @@ struct CoroBase : public std::enable_shared_from_this<CoroBase> {
 
   int id{};
   ValueWrapper ret{};
-  FinishKind finish_kind_{FinishKind::Running};
+  bool returned{false};
 
   // condition of wake up
   std::function<bool()> wakeup_condition_{nullptr};
@@ -230,7 +219,7 @@ struct Coro final : public CoroBase {
           } catch (...) {
             throw;
           }
-          self->MarkFinishedNormallyIfRunning();
+          self->returned = true;
           ltest_coro_ctx = false;
           return std::move(ctx);
         });

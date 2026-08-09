@@ -835,18 +835,6 @@ static inline void AppendDrainedDualEvents(std::vector<DualHistoryEvent>& seq,
   AppendCollectedDrainedDualEvents(seq, drained);
 }
 
-static inline void DiscardDrainedDualEvents(const Task& task) {
-  if (task->IsDual() && task->HasDualEvents()) {
-    (void)task->DrainDualEvents();
-  }
-}
-
-template <class Threads>
-static inline void DiscardDrainedDualEvents(const Threads& threads) {
-  ForEachTLATask(threads, [](size_t, size_t, const Task& task) {
-    DiscardDrainedDualEvents(task);
-  });
-}
 
 // StrategyScheduler generates different sequential histories (using Strategy)
 // and then checks them with the ModelChecker
