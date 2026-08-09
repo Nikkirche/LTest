@@ -36,7 +36,7 @@ static int ltest_futex(long arg0, long arg1, long arg2, long *result) {
       *result = 0;
     } else {
       errno = EAGAIN;
-      *result = 1;
+      *result = -1;
     }
   } else if (arg1 == FUTEX_WAKE || arg1 == FUTEX_WAKE_BITSET) {
     debug(stderr, "caught wake\n");
