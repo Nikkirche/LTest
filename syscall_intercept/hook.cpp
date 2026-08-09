@@ -5,6 +5,7 @@
 #include <syscall.h>
 
 #include <cerrno>
+#include <cstdlib>
 
 #include "runtime/include/block_manager.h"
 #include "runtime/include/coro_ctx_guard.h"
@@ -77,9 +78,12 @@ void __assert_fail(const char *assertion, const char *file, unsigned int line,
   if (ltest_coro_ctx) {
     return ltest::LtestFail(assertion, file, line, function);
   }
-  static void *(*real_assert)(const char *assertion, const char *file,
-                              unsigned int line, const char *function);
-  reinterpret_cast<void *&>(real_assert) = dlsym(RTLD_NEXT, "real_assert");
+
+  static void (*real_assert)(const char *assertion, const char *file,
+                             unsigned int line, const char *function);
+  if (!real_assert) {
+    reinterpret_cast<void *&>(real_assert) = dlsym(RTLD_NEXT, "__assert_fail");
+  }
   real_assert(assertion, file, line, function);
 }
 }
