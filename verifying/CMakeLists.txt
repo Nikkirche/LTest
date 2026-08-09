@@ -35,8 +35,8 @@ function(verify_target_without_plugin target)
             COMMAND ${CLANG_TOOL_EXECUTABLE}
                 -p=${CMAKE_BINARY_DIR} # passing compilation database, make sure CMAKE_EXPORT_COMPILE_COMMANDS flag is set
                     --temp-prefix ${CLANG_TOOL_TMP_PREFIX}
-                    --replace-names ::std::atomic
-                    --insert-names  ltest::latomic
+                    --replace-names ::std::shared_mutex,::std::atomic
+                    --insert-names  ltest::shared_mutex,ltest::latomic
                     ${CMAKE_CURRENT_SOURCE_DIR}/${source_name}
             DEPENDS ${CLANG_TOOL}
             COMMENT "Running Clang Pass Tool on ${source_name}"
