@@ -1201,10 +1201,6 @@ struct StrategyScheduler : public SchedulerWithReplay {
       if (next_task->IsReturned()) {
         strategy.OnVerifierTaskFinish(next_task, thread_id);
 
-        if (next_task->FinishedDuringTermination()) {
-          thread_cutoff[thread_id] = true;
-        }
-
         auto result = next_task->GetRetVal();
         sequential_history.emplace_back(Response(next_task, result, thread_id));
       }
@@ -1730,14 +1726,7 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
 
       const bool is_last = (last_pos[task_id] == step);
       if (mode == ReplayMode::CompleteOnLast && is_last) {
-        if (task->IsDual()) {
-          bool old_terminating = ltest_round_terminating;
-          ltest_round_terminating = true;
-          task->Terminate();
-          ltest_round_terminating = old_terminating;
-        } else {
-          task->Terminate();
-        }
+        task->Terminate();
       } else {
         task->Resume(thread_id);
       }
@@ -1746,10 +1735,6 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
 
       if (task->IsReturned()) {
         strategy.OnVerifierTaskFinish(task, static_cast<size_t>(thread_id_i));
-
-        if (task->FinishedDuringTermination()) {
-          thread_cutoff[thread_id] = true;
-        }
 
         if (!task->IsDual()) {
           auto result = task->GetRetVal();

@@ -216,8 +216,8 @@ constexpr bool CleanupBeforeTargetDestroy() {
 // ------------------------------------
 // Atomic helpers for dual wrapper.
 //
-// These functions access this_coro (shared_ptr), ltest_round_terminating,
-// block_manager — all of which contain load/store instructions.
+// These functions access this_coro (shared_ptr) and block_manager — both of
+// which contain load/store instructions.
 // They MUST be as_atomic so that the yield pass does NOT insert
 // CoroYield() inside them. Otherwise we get infinite recursion:
 //   wrapper load → CoroYield → this_coro load → CoroYield → ...
@@ -237,20 +237,8 @@ as_atomic inline void dual_emit_followup_done(ValueWrapper res) {
                            std::move(res));
 }
 
-as_atomic inline bool dual_is_terminating() {
-  return ltest_round_terminating;
-}
-
-as_atomic inline void dual_mark_terminated() {
-  this_coro->MarkFinishedDuringTermination();
-}
-
-as_atomic inline void dual_keep_alive(std::shared_ptr<void> p) {
-  this_coro->KeepAlive(std::move(p));
-}
-
 as_atomic inline void dual_defer_destroy(std::coroutine_handle<> h) {
-  this_coro->DeferDestroy(h);
+  (void)h;
 }
 
 as_atomic inline void dual_set_blocked(const BlockState& state) {
@@ -310,19 +298,6 @@ struct TargetAwaitableMethod {
                         MethodPtr method_ptr) {
     auto wrapper = [method_ptr](Target* obj, Args... args) as_atomic
         -> ValueWrapper {
-      auto terminated_value = []() as_atomic -> ValueWrapper {
-        if constexpr (std::is_same_v<Ret, void>) {
-          return void_v;
-        } else {
-          return ValueWrapper(Ret{});
-        }
-      };
-
-      if (detail::dual_is_terminating()) {
-        detail::dual_mark_terminated();
-        return terminated_value();
-      }
-
       auto run_with = [&](auto& aw) as_atomic -> ValueWrapper {
         bool ready = aw.await_ready();
 
@@ -396,7 +371,7 @@ struct TargetAwaitableMethod {
           }
         }
 
-        while (!detail::dual_is_terminating()) {
+        while (true) {
           if constexpr (requires { aw.ltest_drive_executor(); }) {
             aw.ltest_drive_executor();
           }
@@ -413,13 +388,6 @@ struct TargetAwaitableMethod {
           CoroYield();
         }
 
-        if (detail::dual_is_terminating() && !st->ready) {
-          detail::dual_try_unregister(aw);
-          detail::dual_clear_wakeup_condition();
-          detail::dual_mark_terminated();
-          return terminated_value();
-        }
-
         assert(st->ready);
         detail::dual_clear_wakeup_condition();
         if constexpr (std::is_same_v<Ret, void>) {
@@ -434,44 +402,22 @@ struct TargetAwaitableMethod {
           std::remove_cvref_t<std::invoke_result_t<MethodPtr, Target*, Args...>>;
 
       if constexpr (HasAwaitMethods<ReturnedT>) {
-        struct DirectAwaiterBox {
-          alignas(ReturnedT) std::byte storage[sizeof(ReturnedT)];
-          bool engaged{false};
-
-          ReturnedT* get() {
-            return std::launder(reinterpret_cast<ReturnedT*>(storage));
-          }
-
-          ~DirectAwaiterBox() {
-            if (engaged) {
-              get()->~ReturnedT();
-            }
-          }
-        };
-
-        auto box = std::make_shared<DirectAwaiterBox>();
-        ::new (box->storage)
-            ReturnedT(std::invoke(method_ptr, obj, std::forward<Args>(args)...));
-        box->engaged = true;
-        detail::dual_keep_alive(std::static_pointer_cast<void>(box));
-        return run_with(*box->get());
+        ReturnedT awaiter_obj(
+            std::invoke(method_ptr, obj, std::forward<Args>(args)...));
+        return run_with(awaiter_obj);
       } else {
         auto tmp = std::invoke(method_ptr, obj, std::forward<Args>(args)...);
         using AwaitableT = std::decay_t<decltype(tmp)>;
-
-        auto awaitable = std::make_shared<AwaitableT>(std::move(tmp));
-        detail::dual_keep_alive(std::static_pointer_cast<void>(awaitable));
-
-        decltype(auto) aw = ToAwaiter(std::move(*awaitable));
+        AwaitableT awaitable(std::move(tmp));
+        decltype(auto) aw = ToAwaiter(std::move(awaitable));
         using AwT = decltype(aw);
 
         if constexpr (std::is_lvalue_reference_v<AwT>) {
           return run_with(aw);
         } else {
           using AwaiterT = std::decay_t<AwT>;
-          auto awaiter = std::make_shared<AwaiterT>(std::move(aw));
-          detail::dual_keep_alive(std::static_pointer_cast<void>(awaiter));
-          return run_with(*awaiter);
+          AwaiterT awaiter(std::move(aw));
+          return run_with(awaiter);
         }
       }
     };
@@ -505,20 +451,6 @@ struct TargetDualMethod {
                    MethodPtr method_ptr) {
     auto wrapper = [method_ptr](Target* obj, Args... args) non_atomic
         -> ValueWrapper {
-      auto terminated_value = []() as_atomic -> ValueWrapper {
-        if constexpr (std::is_same_v<Ret, void>) {
-          return void_v;
-        } else {
-          return ValueWrapper(Ret{});
-        }
-      };
-
-      // Cleanup path: do not start a new dual wait during round termination.
-      if (detail::dual_is_terminating()) {
-        detail::dual_mark_terminated();
-        return terminated_value();
-      }
-
       // Core runner over a concrete awaiter object (has await_*).
       auto run_with = [&](auto& aw, bool emit_request_before_suspend) non_atomic
           -> ValueWrapper {
@@ -611,7 +543,7 @@ struct TargetDualMethod {
         }
 
         // Block current LTest task until waker runs.
-        while (!detail::dual_is_terminating()) {
+        while (true) {
           if constexpr (requires { aw.ltest_drive_executor(); }) {
             aw.ltest_drive_executor();
           }
@@ -629,17 +561,6 @@ struct TargetDualMethod {
           CoroYield();
         }
 
-        // Termination: exit without follow-up events only if the target
-        // awaiter was not already completed. Some VK awaiters reset their
-        // registration state when awakened, so unregistering an already-ready
-        // awaiter is not valid.
-        if (detail::dual_is_terminating() && !st->ready) {
-          detail::dual_try_unregister(aw);
-          detail::dual_clear_wakeup_condition();
-          detail::dual_mark_terminated();
-          return terminated_value();
-        }
-
         assert(st->ready);
         detail::dual_clear_wakeup_condition();
         detail::dual_emit_followup_invoke();
@@ -650,38 +571,17 @@ struct TargetDualMethod {
           std::remove_cvref_t<std::invoke_result_t<MethodPtr, Target*, Args...>>;
 
       if constexpr (HasAwaitMethods<ReturnedT>) {
-        struct DirectAwaiterBox {
-          alignas(ReturnedT) std::byte storage[sizeof(ReturnedT)];
-          bool engaged{false};
-
-          ReturnedT* get() {
-            return std::launder(reinterpret_cast<ReturnedT*>(storage));
-          }
-
-          ~DirectAwaiterBox() {
-            if (engaged) {
-              get()->~ReturnedT();
-            }
-          }
-        };
-
-        auto box = std::make_shared<DirectAwaiterBox>();
-        ::new (box->storage)
-            ReturnedT(std::invoke(method_ptr, obj, std::forward<Args>(args)...));
-        box->engaged = true;
-        detail::dual_keep_alive(std::static_pointer_cast<void>(box));
+        ReturnedT awaiter_obj(
+            std::invoke(method_ptr, obj, std::forward<Args>(args)...));
         detail::dual_set_cleanup_before_target_destroy(
             CleanupBeforeTargetDestroy<ReturnedT>());
-        return run_with(*box->get(),
+        return run_with(awaiter_obj,
                         EmitDualRequestBeforeSuspend<ReturnedT>());
       } else {
         auto tmp = std::invoke(method_ptr, obj, std::forward<Args>(args)...);
         using AwaitableT = std::decay_t<decltype(tmp)>;
-
-        auto awaitable = std::make_shared<AwaitableT>(std::move(tmp));
-        detail::dual_keep_alive(std::static_pointer_cast<void>(awaitable));
-
-        decltype(auto) aw = ToAwaiter(std::move(*awaitable));
+        AwaitableT awaitable(std::move(tmp));
+        decltype(auto) aw = ToAwaiter(std::move(awaitable));
         using AwT = decltype(aw);
 
         if constexpr (std::is_lvalue_reference_v<AwT>) {
@@ -691,11 +591,10 @@ struct TargetDualMethod {
           return run_with(aw, EmitDualRequestBeforeSuspend<AwaiterT>());
         } else {
           using AwaiterT = std::decay_t<AwT>;
-          auto awaiter = std::make_shared<AwaiterT>(std::move(aw));
-          detail::dual_keep_alive(std::static_pointer_cast<void>(awaiter));
+          AwaiterT awaiter(std::move(aw));
           detail::dual_set_cleanup_before_target_destroy(
               CleanupBeforeTargetDestroy<AwaiterT>());
-          return run_with(*awaiter, EmitDualRequestBeforeSuspend<AwaiterT>());
+          return run_with(awaiter, EmitDualRequestBeforeSuspend<AwaiterT>());
         }
       }
     };

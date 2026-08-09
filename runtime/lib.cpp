@@ -1,7 +1,7 @@
 #include "include/lib.h"
 
+#include <atomic>
 #include <cassert>
-#include <deque>
 #include <string>
 #include <utility>
 #include <vector>
@@ -10,8 +10,6 @@
 #include "logger.h"
 #include "value_wrapper.h"
 
-#include <atomic>
-
 // See comments in the lib.h.
 Task this_coro{};
 int this_thread_id = -1;
@@ -19,31 +17,13 @@ int this_thread_id = -1;
 boost::context::fiber_context sched_ctx;
 std::optional<CoroutineStatus> coroutine_status;
 bool ltest_initialized = false;
-bool ltest_round_terminating = false;
 
 namespace {
-std::deque<std::coroutine_handle<>> g_external_resumes;
 std::atomic<std::uint64_t> g_dual_event_seqno{0};
 }  // namespace
 
 namespace ltest {
 std::vector<TaskBuilder> task_builders{};
-
-void EnqueueExternalResume(std::coroutine_handle<> h) {
-  if (h) {
-    g_external_resumes.push_back(h);
-  }
-}
-
-void DrainExternalResumes() {
-  while (!g_external_resumes.empty()) {
-    auto h = g_external_resumes.front();
-    g_external_resumes.pop_front();
-    if (h) {
-      h.resume();
-    }
-  }
-}
 }
 
 // Test failure tracking for litmus tests, which could expectedly fail.
@@ -70,33 +50,6 @@ void ClearTestFailure() {
 
 Task CoroBase::GetPtr() { return shared_from_this(); }
 
-// ---- deferred cleanup / keepalive ----
-void CoroBase::KeepAlive(std::shared_ptr<void> p) {
-  if (!p) return;
-  keepalive_.push_back(std::move(p));
-}
-
-void CoroBase::DeferDestroy(std::coroutine_handle<> h) {
-  if (!h) return;
-  deferred_destroy_.push_back(h);
-}
-
-void CoroBase::RunDeferredCleanup() {
-  // Destroy deferred coroutine handles
-  for (auto h : deferred_destroy_) {
-    if (h) {
-      h.destroy();
-    }
-  }
-  deferred_destroy_.clear();
-
-  // Release kept-alive heap objects
-  keepalive_.clear();
-
-  // (Optional safety) drop any pending dual events; at round end they should not matter.
-  pending_dual_events_.clear();
-}
-
 void CoroBase::EmitDualEvent(DualEventKind kind, ValueWrapper result) {
   pending_dual_events_.push_back(
       DualEvent{kind, g_dual_event_seqno.fetch_add(1, std::memory_order_relaxed),
@@ -110,7 +63,6 @@ std::vector<CoroBase::DualEvent> CoroBase::DrainDualEvents() {
 }
 
 void CoroBase::Resume(size_t resumed_thread_id) {
-  ltest::DrainExternalResumes();
   this_coro = this->GetPtr();
   this_thread_id = resumed_thread_id;
   assert(!this_coro->IsReturned() && this_coro->ctx);
@@ -130,7 +82,6 @@ void CoroBase::Resume(size_t resumed_thread_id) {
   }
   this_coro.reset();
   this_thread_id = -1;
-  ltest::DrainExternalResumes();
 }
 
 void CoroBase::setWakeupCondition(std::function<bool()> cond) {
@@ -155,9 +106,6 @@ ValueWrapper CoroBase::GetRetVal() const {
 }
 
 CoroBase::~CoroBase() {
-  // Ensure no leaked coroutine handles if cleanup wasn't called explicitly.
-  RunDeferredCleanup();
-
   // The coroutine must be returned if we want to restart it.
   // We can't just Terminate() it because it is the runtime responsibility to
   // decide, in which order the tasks should be terminated.
@@ -176,16 +124,8 @@ bool CoroBase::FinishedNormally() const {
   return finish_kind_ == FinishKind::ReturnedNormally;
 }
 
-bool CoroBase::FinishedDuringTermination() const {
-  return finish_kind_ == FinishKind::ReturnedDuringTermination;
-}
-
 void CoroBase::MarkFinishedNormally() {
   finish_kind_ = FinishKind::ReturnedNormally;
-}
-
-void CoroBase::MarkFinishedDuringTermination() {
-  finish_kind_ = FinishKind::ReturnedDuringTermination;
 }
 
 void CoroBase::MarkFinishedNormallyIfRunning() {

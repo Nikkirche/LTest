@@ -1,9 +1,7 @@
 #pragma once
 #include <boost/context/fiber.hpp>
 #include <cassert>
-#include <coroutine>
 #include <cstdint>
-#include <deque>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -30,11 +28,6 @@ extern int this_thread_id;
 // Scheduler context
 extern boost::context::fiber_context sched_ctx;
 
-// Set while a round is being stopped and the target state is being cleaned up.
-// Blocked dual awaiters use this as a cancellation signal: they leave the wait
-// loop, unregister from the target if needed, and do not emit follow-up events.
-extern bool ltest_round_terminating;
-
 extern std::optional<CoroutineStatus> coroutine_status;
 
 struct CoroutineStatus {
@@ -60,11 +53,6 @@ void ClearTestFailure();
 extern "C" void CoroYield();
 extern "C" void CoroutineStatusChange(char* coroutine, bool start);
 
-namespace ltest {
-void EnqueueExternalResume(std::coroutine_handle<> h);
-void DrainExternalResumes();
-}  // namespace ltest
-
 struct CoroBase : public std::enable_shared_from_this<CoroBase> {
   CoroBase(const CoroBase&) = delete;
   CoroBase(CoroBase&&) = delete;
@@ -81,15 +69,12 @@ struct CoroBase : public std::enable_shared_from_this<CoroBase> {
   enum class FinishKind : std::uint8_t {
     Running = 0,
     ReturnedNormally = 1,
-    ReturnedDuringTermination = 2,
   };
 
   FinishKind GetFinishKind() const;
   bool FinishedNormally() const;
-  bool FinishedDuringTermination() const;
 
   void MarkFinishedNormally();
-  void MarkFinishedDuringTermination();
   void MarkFinishedNormallyIfRunning();
 
   void setWakeupCondition(std::function<bool()> cond);
@@ -162,25 +147,6 @@ struct CoroBase : public std::enable_shared_from_this<CoroBase> {
   std::vector<DualEvent> DrainDualEvents();
   bool HasDualEvents() const { return !pending_dual_events_.empty(); }
 
-  // ---- lifetime management for dual termination safety ----
-  //
-  // KeepAlive: hold arbitrary heap state until end of round (e.g. awaitable
-  // object).
-  // DeferDestroy: postpone coroutine_handle<>::destroy() until end of round.
-  //
-  void KeepAlive(std::shared_ptr<void> p);
-
-  template <class T>
-  void KeepAlive(std::shared_ptr<T> p) {
-    KeepAlive(std::static_pointer_cast<void>(std::move(p)));
-  }
-
-  void DeferDestroy(std::coroutine_handle<> h);
-
-  // Must be called when no further target code can resume deferred handles.
-  // Safe to call multiple times.
-  void RunDeferredCleanup();
-
   virtual ~CoroBase();
 
   boost::context::fiber_context& GetCtx() { return ctx; }
@@ -208,12 +174,6 @@ struct CoroBase : public std::enable_shared_from_this<CoroBase> {
   bool is_dual_task_{false};
   bool cleanup_before_target_destroy_{false};
   std::vector<DualEvent> pending_dual_events_{};
-
-  // Keep heap objects alive until round end (awaitables, shared state, etc.)
-  std::vector<std::shared_ptr<void>> keepalive_{};
-
-  // Destroy coroutine handles at round end (waker handles passed to await_suspend()).
-  std::vector<std::coroutine_handle<>> deferred_destroy_{};
 };
 
 template <typename Target, typename... Args>
