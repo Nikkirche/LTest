@@ -238,10 +238,6 @@ as_atomic inline void dual_emit_followup_done(ValueWrapper res) {
                            std::move(res));
 }
 
-as_atomic inline void dual_defer_destroy(std::coroutine_handle<> h) {
-  (void)h;
-}
-
 as_atomic inline void dual_set_blocked(const BlockState& state) {
   this_coro->SetBlocked(state);
 }
@@ -350,8 +346,6 @@ struct TargetAwaitableMethod {
           Waker w = make_waker(st);
           h = w.h;
         }
-        detail::dual_defer_destroy(h);
-
         bool suspended = true;
         using ASRet = decltype(aw.await_suspend(h));
         if constexpr (std::is_same_v<ASRet, bool>) {
@@ -511,9 +505,6 @@ struct TargetDualMethod {
           Waker w = make_waker(st);
           h = w.h;
         }
-
-        // Defer handle destruction to end-of-round cleanup.
-        detail::dual_defer_destroy(h);
 
         using ASRet = decltype(aw.await_suspend(h));
         const bool request_before_suspend = emit_request_before_suspend;
