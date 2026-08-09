@@ -85,6 +85,10 @@ struct TLAStrategy : public BaseStrategyWithThreads<TargetObj, Verifier> {
   void StartNextRound() override {
     BaseStrategyWithThreads<TargetObj, Verifier>::StartNextRound();
     frame_counter = 0;
+    if (frames.empty()) {
+      is_exhausted = true;
+      return;
+    }
     auto frame = frames.back();
     if (!frame.is_new) {
       at_task_creation = true;

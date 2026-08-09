@@ -151,9 +151,17 @@ extern "C" void CoroutineStatusChange(char* name, bool start) {
   CoroYield();
 }
 
+void CoroBase::DestroyContext() {
+  if (ctx) {
+    ctx = boost::context::fiber_context{};
+  }
+}
+
 void CoroBase::Terminate() {
   finish_kind_ = FinishKind::ReturnedNormally;
   fstate = {};
+  clearWakeupCondition();
+  DestroyContext();
 }
 
 void CoroBase::TerminateWith(const ValueWrapper& value) {

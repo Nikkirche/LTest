@@ -31,7 +31,9 @@ void free(void *ptr) {
   if (!real_free) {
     reinterpret_cast<void *&>(real_free) = dlsym(RTLD_NEXT, "free");
   }
-  if (ltest_coro_ctx && ptr != nullptr) {
+  // A pointer can be allocated in a coroutine and freed later from scheduler
+  // destructor code after ltest_coro_ctx has been cleared.
+  if (memory_handler && ptr != nullptr) {
     ltest::SchedCtxGuard guard;
     memory_handler->ForgetAboutPointer(ptr);
   }

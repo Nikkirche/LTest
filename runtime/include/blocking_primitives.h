@@ -45,9 +45,9 @@ struct mutex {
 
 struct condition_variable {
   as_atomic void wait(std::unique_lock<ltest::mutex>& lock) {
-    const std::intptr_t key = reinterpret_cast<std::intptr_t>(this);
+    addr = lock.mutex()->state.addr;
     lock.unlock();
-    this_coro->SetBlocked({key, 0});
+    this_coro->SetBlocked({addr, 1});
     {
       CoroCtxGuard guard;
       CoroYield();
@@ -56,10 +56,10 @@ struct condition_variable {
   }
 
   // is needed to match pthread api - there doesn't exists any std::unique_lock
-  as_atomic void wait(ltest::mutex &lock) {
-    const std::intptr_t key = reinterpret_cast<std::intptr_t>(this);
+  as_atomic void wait(ltest::mutex& lock) {
+    addr = lock.state.addr;
     lock.unlock();
-    this_coro->SetBlocked({key, 0});
+    this_coro->SetBlocked({addr, 1});
     {
       CoroCtxGuard guard;
       CoroYield();
@@ -67,15 +67,12 @@ struct condition_variable {
     lock.lock();
   }
 
-  as_atomic void notify_one() {
-    const std::intptr_t key = reinterpret_cast<std::intptr_t>(this);
-    block_manager.UnblockOn(key, 1);
-  }
+  as_atomic void notify_one() { block_manager.UnblockOn(addr, 1); }
 
-  as_atomic void notify_all() {
-    const std::intptr_t key = reinterpret_cast<std::intptr_t>(this);
-    block_manager.UnblockAllOn(key);
-  }
+  as_atomic void notify_all() { block_manager.UnblockAllOn(addr); }
+
+ private:
+  std::intptr_t addr = 0;
 };
 
 /**
