@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <utility>
 
 #include "coro_ctx_guard.h"
 #include "logger.h"
@@ -25,10 +26,12 @@ void MemoryHandler::ForgetAboutPointer(void* ptr) {
 }
 
 void MemoryHandler::FreeAllMemory() {
-  for (auto mem : memory) {
+  std::deque<void*> to_free;
+  to_free.swap(memory);
+
+  for (auto mem : to_free) {
     free(mem);
   }
-  memory.clear();
 }
 
 // we check to ltest_coro_ctx to support resmockpass instrumentation

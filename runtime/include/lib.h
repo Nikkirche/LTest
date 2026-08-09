@@ -224,12 +224,14 @@ struct Coro final : public CoroBase {
             self->ret =
                 std::apply(self->func, std::tuple_cat(this_arg, *real_args));
           } catch (const ltest::TestFailure& ex) {
+            ltest::SchedCtxGuard guard;
             ltest::SetTestFailure(ex.what());
             self->ret = void_v;
           } catch (...) {
             throw;
           }
           self->MarkFinishedNormallyIfRunning();
+          ltest_coro_ctx = false;
           return std::move(ctx);
         });
 

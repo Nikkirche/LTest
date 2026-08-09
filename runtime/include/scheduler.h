@@ -394,6 +394,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
   void ResetCurrentRound() override {
     this->SetAllowNewTasks(true);
     std::fill(round_schedule.begin(), round_schedule.end(), -1);
+    TerminateRunningTasks();
 
     sched_checker.Reset();
     ResetWmmGraph(threads.size());
@@ -567,6 +568,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
 
   // Terminates all running tasks.
   void TerminateTasks() override {
+    TerminateRunningTasks();
     sched_checker.Reset();
     // must appear before state reset, so that constructors of atomics in
     // data structure under test register themselves in the new execution graph
@@ -576,10 +578,21 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
     state.reset(new TargetObj{});
   }
 
+  void TerminateRunningTasks() {
+    for (auto& thread : threads) {
+      for (size_t i = 0; i < thread.size(); i++) {
+        if (!thread[i]->IsReturned()) {
+          thread[i]->Terminate();
+        }
+      }
+    }
+  }
+
   // Lightweight reset strictly for ExploreRound loops.
   // Keeps task objects & scheduler bookkeeping intact, resets spec state &
   // block queues.
   void ResetExplorationState() override {
+    TerminateRunningTasks();
     ResetOSState();
     std::fill(round_schedule.begin(), round_schedule.end(), -1);
     this->SetAllowNewTasks(true);
@@ -1191,8 +1204,9 @@ struct StrategyScheduler : public SchedulerWithReplay {
       if (next_task->IsReturned()) continue;
 
       const bool is_last = (last_pos[next_task_id] == step);
-
-      if (mode == ReplayMode::CompleteOnLast && is_last) {
+      const bool forced_terminate =
+          mode == ReplayMode::CompleteOnLast && is_last;
+      if (forced_terminate) {
         next_task->Terminate();
       } else {
         next_task->Resume(thread_id);
@@ -1201,8 +1215,11 @@ struct StrategyScheduler : public SchedulerWithReplay {
       if (next_task->IsReturned()) {
         strategy.OnVerifierTaskFinish(next_task, thread_id);
 
-        auto result = next_task->GetRetVal();
-        sequential_history.emplace_back(Response(next_task, result, thread_id));
+        if (!forced_terminate) {
+          auto result = next_task->GetRetVal();
+          sequential_history.emplace_back(
+              Response(next_task, result, thread_id));
+        }
       }
     }
 
@@ -1725,7 +1742,9 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
       }
 
       const bool is_last = (last_pos[task_id] == step);
-      if (mode == ReplayMode::CompleteOnLast && is_last) {
+      const bool forced_terminate =
+          mode == ReplayMode::CompleteOnLast && is_last;
+      if (forced_terminate) {
         task->Terminate();
       } else {
         task->Resume(thread_id);
@@ -1736,7 +1755,7 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
       if (task->IsReturned()) {
         strategy.OnVerifierTaskFinish(task, static_cast<size_t>(thread_id_i));
 
-        if (!task->IsDual()) {
+        if (!forced_terminate && !task->IsDual()) {
           auto result = task->GetRetVal();
           seq.emplace_back(Response(task, result, thread_id));
         }

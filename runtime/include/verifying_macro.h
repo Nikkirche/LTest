@@ -26,6 +26,7 @@ namespace ltest {
 extern std::vector<TaskBuilder> task_builders;
 
 inline void LtestFail(const char *expr, const char *file, unsigned int line, const char* func) {
+  ltest::SchedCtxGuard guard;
   std::ostringstream oss;
   oss << "test failed: " << expr << " at " << file << ":" << line << " in " << func;
   throw ltest::TestFailure(oss.str());
@@ -314,9 +315,13 @@ struct TargetAwaitableMethod {
           std::intptr_t addr;
           bool ready{false};
         };
-        auto st = std::make_shared<WaitState>();
-        st->addr = reinterpret_cast<std::intptr_t>(st.get());
-        detail::dual_set_ready_wakeup_condition(st);
+        std::shared_ptr<WaitState> st;
+        {
+          ltest::SchedCtxGuard guard;
+          st = std::make_shared<WaitState>();
+          st->addr = reinterpret_cast<std::intptr_t>(st.get());
+          detail::dual_set_ready_wakeup_condition(st);
+        }
 
         struct Waker {
           struct promise_type {
@@ -339,8 +344,12 @@ struct TargetAwaitableMethod {
           co_return;
         };
 
-        Waker w = make_waker(st);
-        std::coroutine_handle<> h = w.h;
+        std::coroutine_handle<> h;
+        {
+          ltest::SchedCtxGuard guard;
+          Waker w = make_waker(st);
+          h = w.h;
+        }
         detail::dual_defer_destroy(h);
 
         bool suspended = true;
@@ -467,9 +476,13 @@ struct TargetDualMethod {
           std::intptr_t addr;
           bool ready{false};
         };
-        auto st = std::make_shared<DualWaitState>();
-        st->addr = reinterpret_cast<std::intptr_t>(st.get());
-        detail::dual_set_ready_wakeup_condition(st);
+        std::shared_ptr<DualWaitState> st;
+        {
+          ltest::SchedCtxGuard guard;
+          st = std::make_shared<DualWaitState>();
+          st->addr = reinterpret_cast<std::intptr_t>(st.get());
+          detail::dual_set_ready_wakeup_condition(st);
+        }
 
         struct Waker {
           struct promise_type {
@@ -492,8 +505,12 @@ struct TargetDualMethod {
           co_return;
         };
 
-        Waker w = make_waker(st);
-        std::coroutine_handle<> h = w.h;
+        std::coroutine_handle<> h;
+        {
+          ltest::SchedCtxGuard guard;
+          Waker w = make_waker(st);
+          h = w.h;
+        }
 
         // Defer handle destruction to end-of-round cleanup.
         detail::dual_defer_destroy(h);

@@ -51,6 +51,7 @@ void ClearTestFailure() {
 Task CoroBase::GetPtr() { return shared_from_this(); }
 
 void CoroBase::EmitDualEvent(DualEventKind kind, ValueWrapper result) {
+  ltest::SchedCtxGuard guard;
   pending_dual_events_.push_back(
       DualEvent{kind, g_dual_event_seqno.fetch_add(1, std::memory_order_relaxed),
                 std::move(result)});
@@ -72,23 +73,27 @@ void CoroBase::Resume(size_t resumed_thread_id) {
   // NOTE(kmitkin): Guard below prevents us from call CoroYield in the scheduler
   // coroutine, area that protected by it should be as small as possible to
   // reduce errors
-  {
-    ltest::CoroCtxGuard guard{};
-    boost::context::fiber_context([coro](boost::context::fiber_context&& ctx) {
-      sched_ctx = std::move(ctx);
+  boost::context::fiber_context([coro](boost::context::fiber_context&& ctx) {
+    sched_ctx = std::move(ctx);
+    {
+      ltest::CoroCtxGuard guard{};
       coro->ctx = std::move(coro->ctx).resume();
-      return std::move(sched_ctx);
-    }).resume();
-  }
+    }
+    return std::move(sched_ctx);
+  }).resume();
   this_coro.reset();
   this_thread_id = -1;
 }
 
 void CoroBase::setWakeupCondition(std::function<bool()> cond) {
+  ltest::SchedCtxGuard guard;
   wakeup_condition_ = std::move(cond);
 }
 
-void CoroBase::clearWakeupCondition() { wakeup_condition_ = nullptr; }
+void CoroBase::clearWakeupCondition() {
+  ltest::SchedCtxGuard guard;
+  wakeup_condition_ = nullptr;
+}
 
 bool CoroBase::hasWakeupCondition() const {
   return static_cast<bool>(wakeup_condition_);
@@ -139,10 +144,12 @@ extern "C" void CoroYield() {
     return;
   }
   assert(this_coro && sched_ctx);
+  ltest_coro_ctx = false;
   boost::context::fiber_context([](boost::context::fiber_context&& ctx) {
     this_coro->ctx = std::move(ctx);
     return std::move(sched_ctx);
   }).resume();
+  ltest_coro_ctx = true;
 }
 
 extern "C" void CoroutineStatusChange(char* name, bool start) {
