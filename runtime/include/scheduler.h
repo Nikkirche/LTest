@@ -393,9 +393,11 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
 
   void ResetCurrentRound() override {
     this->SetAllowNewTasks(true);
-    ResetOSState();
     std::fill(round_schedule.begin(), round_schedule.end(), -1);
 
+    sched_checker.Reset();
+    ResetWmmGraph(threads.size());
+    ResetOSState();
     state = target_factory();
 
     // New round/replay starts from fresh target state, so verifier state
@@ -581,6 +583,8 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
     ResetOSState();
     std::fill(round_schedule.begin(), round_schedule.end(), -1);
     this->SetAllowNewTasks(true);
+    sched_checker.Reset();
+    ResetWmmGraph(threads.size());
     state = target_factory();
     ltest::verifier_hooks::OnRoundStart(sched_checker, threads_count);
 
@@ -922,7 +926,7 @@ struct StrategyScheduler : public SchedulerWithReplay {
  protected:
   Result RunRound() override {
     SeqHistory sequential_history;
-    FullHistory full_history;
+    FullHistoryWithThreads full_history;
 
     bool deadlock_detected{false};
     size_t started_tasks = 0;
@@ -972,9 +976,9 @@ struct StrategyScheduler : public SchedulerWithReplay {
         sequential_history.emplace_back(Invoke(next_task, thread_id));
         ++started_tasks;
       }
-      full_history.emplace_back(next_task);
 
       next_task->Resume(thread_id);
+      strategy.UpdateSimulatorState(thread_id, sequential_history, full_history);
       if (next_task->IsReturned()) {
         ++finished_tasks;
         strategy.OnVerifierTaskFinish(next_task, thread_id);
@@ -991,7 +995,7 @@ struct StrategyScheduler : public SchedulerWithReplay {
       if (deadlock_policy != DeadlockPolicy::Fail) {
         if (!checker.Check(sequential_history)) {
           return NonLinearizableHistory(
-              full_history, sequential_history,
+              ConvFullHistWithThreadToFullHist(full_history), sequential_history,
               NonLinearizableHistory::Reason::NON_LINEARIZABLE_HISTORY);
         }
 
@@ -1012,13 +1016,14 @@ struct StrategyScheduler : public SchedulerWithReplay {
       if (!IsReportableDeadlockHistory(sequential_history)) {
         return std::nullopt;
       }
-      return NonLinearizableHistory(full_history, sequential_history,
-                                    NonLinearizableHistory::Reason::DEADLOCK);
+      return NonLinearizableHistory(
+          ConvFullHistWithThreadToFullHist(full_history), sequential_history,
+          NonLinearizableHistory::Reason::DEADLOCK);
     }
 
     if (!checker.Check(sequential_history)) {
       return NonLinearizableHistory(
-          full_history, sequential_history,
+          ConvFullHistWithThreadToFullHist(full_history), sequential_history,
           NonLinearizableHistory::Reason::NON_LINEARIZABLE_HISTORY);
     }
 

@@ -58,10 +58,12 @@ void *realloc(void *ptr, size_t size) {
     reinterpret_cast<void *&>(real_realloc) = dlsym(RTLD_NEXT, "realloc");
   }
   void *p = real_realloc(ptr, size);
-  if (ltest_coro_ctx && p != ptr && p != nullptr) {
+  if (ltest_coro_ctx && p != ptr) {
     ltest::SchedCtxGuard guard;
     memory_handler->ForgetAboutPointer(ptr);
-    memory_handler->RememberPointer(p);
+    if (p != nullptr) {
+      memory_handler->RememberPointer(p);
+    }
   }
   return p;
 }
