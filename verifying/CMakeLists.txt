@@ -37,6 +37,7 @@ function(verify_target_without_plugin target)
                     --temp-prefix ${CLANG_TOOL_TMP_PREFIX}
                     --replace-names ::std::atomic
                     --insert-names  ltest::latomic
+                    ${CLANG_TOOL_EXTRA_ARGS}
                     ${CMAKE_CURRENT_SOURCE_DIR}/${source_name}
             DEPENDS ${CLANG_TOOL}
             COMMENT "Running Clang Pass Tool on ${source_name}"
@@ -81,8 +82,8 @@ endfunction()
 function(verify_cotarget target)
     verify_target_without_plugin(${target})
     add_dependencies(${target} runtime coplugin_pass)
-    target_compile_options(${target} PRIVATE  -fplugin=${COPASS_PATH}
-    -fpass-plugin=${COPASS_PATH} -mllvm -coroutine-file=${CMAKE_CURRENT_SOURCE_DIR}/${target}.yml
+    target_compile_options(${target} PRIVATE
+#    -fpass-plugin=${COPASS_PATH} -mllvm -coroutine-file=${CMAKE_CURRENT_SOURCE_DIR}/${target}.yml
      ${CMAKE_ASAN_FLAGS})
     target_link_options(${target} PRIVATE ${CMAKE_ASAN_FLAGS})
 endfunction()

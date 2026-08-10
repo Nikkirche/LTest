@@ -127,7 +127,13 @@ if(NOT FOLLY_BLOCKING_INCLUDE_DIR OR NOT FOLLY_BLOCKING_LIBRARY OR
 else()
     foreach(source_name ${FOLLY_SOURCE_TARGET_LIST})
         get_filename_component(target ${source_name} NAME_WE)
+        set(CLANG_TOOL_EXTRA_ARGS
+                --extra-arg=-I${FOLLY_BLOCKING_INCLUDE_DIR}
+                --extra-arg=-I${GLOG_BLOCKING_INCLUDE_DIR}
+                --extra-arg=-I${DOUBLE_CONVERSION_BLOCKING_INCLUDE_DIR}
+        )
         verify_target(${target})
+        unset(CLANG_TOOL_EXTRA_ARGS)
         target_include_directories(${target} PRIVATE
                 ${FOLLY_BLOCKING_INCLUDE_DIR}
                 ${GLOG_BLOCKING_INCLUDE_DIR}
