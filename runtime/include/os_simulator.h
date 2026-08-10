@@ -34,7 +34,7 @@ class OSSimulator {
   std::unordered_map<uint64_t, std::pair<uint64_t, void**>> join_pairs;
  public:
   OSSimulator() { memory_handler = &os_memory; }
-  ~OSSimulator(){ memory_handler->FreeAllMemory();}
+  virtual ~OSSimulator(){ memory_handler->FreeAllMemory();}
   bool CanThreadContinue(std::size_t number);
   void UpdateOSState(size_t thread, Scheduler::SeqHistory& seq, FullHistoryWithThreads& full);
   void ResetOSState();

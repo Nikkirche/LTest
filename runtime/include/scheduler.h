@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "custom_round.h"
+#include "coro_ctx_guard.h"
 #include "lib.h"
 #include "lincheck.h"
 #include "lincheck_dual.h"
@@ -284,6 +285,8 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
     ltest::verifier_hooks::OnRoundStart(sched_checker, threads_count);
   }
 
+  ~BaseStrategyWithThreads() override { ResetTargetState(); }
+
   std::optional<std::tuple<Task&, int>> GetTask(int task_id) override {
     // TODO: can this be optimized?
     int thread_id = 0;
@@ -399,7 +402,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
     sched_checker.Reset();
     ResetWmmGraph(threads.size());
     ResetOSState();
-    state = target_factory();
+    ResetTargetState(target_factory());
 
     // New round/replay starts from fresh target state, so verifier state
     // must also be reset.
@@ -423,7 +426,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
     this->round_schedule.resize(custom_threads_count, -1);
     this->sched_checker.Reset();
     ResetWmmGraph(custom_threads_count);
-    this->state = this->target_factory();
+    this->ResetTargetState(this->target_factory());
 
     for (size_t current_thread = 0; current_thread < custom_threads_count;
          ++current_thread) {
@@ -575,7 +578,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
     // TODO: for custom scenarios threads number might differ, check for places
     // where `threads.size()` cannot be used
     ResetWmmGraph(threads.size());
-    state.reset(new TargetObj{});
+    ResetTargetState(std::make_unique<TargetObj>());
   }
 
   void TerminateRunningTasks() {
@@ -598,7 +601,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
     this->SetAllowNewTasks(true);
     sched_checker.Reset();
     ResetWmmGraph(threads.size());
-    state = target_factory();
+    ResetTargetState(target_factory());
     ltest::verifier_hooks::OnRoundStart(sched_checker, threads_count);
 
     for (auto& thread : threads) {
@@ -659,6 +662,12 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
   std::uniform_int_distribution<std::mt19937::result_type>
       constructors_distribution;
   std::mt19937 rng;
+
+ private:
+  void ResetTargetState(std::unique_ptr<TargetObj> next = nullptr) {
+    ltest::CoroCtxGuard guard;
+    state = std::move(next);
+  }
 };
 
 #include "minimization.h"
