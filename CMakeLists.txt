@@ -33,9 +33,9 @@ add_subdirectory(clangpass)
 add_subdirectory(codegen)
 add_subdirectory(runtime)
 
-#if(LTEST_BUILD_TESTS)
-#    add_subdirectory(test)
-#endif()
+if(LTEST_BUILD_TESTS)
+    add_subdirectory(test)
+endif()
 add_subdirectory(verifying)
 
 add_subdirectory(syscall_intercept)
