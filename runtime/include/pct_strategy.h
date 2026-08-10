@@ -24,7 +24,10 @@ struct PctStrategy : public BaseStrategyWithThreads<TargetObj, Verifier> {
                                                      std::move(target_factory),
                                                      seed),
         current_depth(1),
-        current_schedule_length(0) {
+        current_schedule_length(0),
+        count_chosen_same(0),
+        last_chosen(0),
+        fair_start(0) {
     PrepareForDepth(current_depth, 1);
   }
 
