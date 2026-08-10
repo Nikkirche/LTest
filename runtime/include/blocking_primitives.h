@@ -14,7 +14,7 @@ struct mutex {
   as_atomic void lock() {
     while (locked) {
       CoroCtxGuard guard;
-      this_coro->SetBlocked(state);
+      this_coro->SetBlocked(state());
       CoroYield();
     }
     locked = 1;
@@ -32,22 +32,26 @@ struct mutex {
 
   as_atomic void unlock() {
     locked = 0;
-    block_manager.UnblockAllOn(
-        state.addr);  // To have the ability schedule any coroutine
+    // To have the ability schedule any coroutine.
+    block_manager.UnblockAllOn(addr());
   }
 
  private:
+  [[nodiscard]] std::intptr_t addr() const {
+    return reinterpret_cast<std::intptr_t>(&locked);
+  }
+
+  [[nodiscard]] BlockState state() const { return {addr(), locked}; }
+
   int locked{0};
-  BlockState state{reinterpret_cast<std::intptr_t>(&locked), locked};
 
   friend struct condition_variable;
 };
 
 struct condition_variable {
   as_atomic void wait(std::unique_lock<ltest::mutex>& lock) {
-    addr = lock.mutex()->state.addr;
     lock.unlock();
-    this_coro->SetBlocked({addr, 1});
+    this_coro->SetBlocked({addr(), 1});
     {
       CoroCtxGuard guard;
       CoroYield();
@@ -57,9 +61,8 @@ struct condition_variable {
 
   // is needed to match pthread api - there doesn't exists any std::unique_lock
   as_atomic void wait(ltest::mutex& lock) {
-    addr = lock.state.addr;
     lock.unlock();
-    this_coro->SetBlocked({addr, 1});
+    this_coro->SetBlocked({addr(), 1});
     {
       CoroCtxGuard guard;
       CoroYield();
@@ -67,12 +70,16 @@ struct condition_variable {
     lock.lock();
   }
 
-  as_atomic void notify_one() { block_manager.UnblockOn(addr, 1); }
+  as_atomic void notify_one() { block_manager.UnblockOn(addr(), 1); }
 
-  as_atomic void notify_all() { block_manager.UnblockAllOn(addr); }
+  as_atomic void notify_all() { block_manager.UnblockAllOn(addr()); }
 
  private:
-  std::intptr_t addr = 0;
+  [[nodiscard]] std::intptr_t addr() const {
+    return reinterpret_cast<std::intptr_t>(&wait_queue_);
+  }
+
+  int wait_queue_{0};
 };
 
 /**
@@ -87,7 +94,7 @@ struct condition_variable {
 struct shared_mutex_r {
   as_atomic void lock() {
     while (locked != 0) {
-      this_coro->SetBlocked(state);
+      this_coro->SetBlocked(state());
       {
         CoroCtxGuard guard;
         CoroYield();
@@ -97,11 +104,11 @@ struct shared_mutex_r {
   }
   as_atomic void unlock() {
     locked = 0;
-    block_manager.UnblockAllOn(state.addr);
+    block_manager.UnblockAllOn(addr());
   }
   as_atomic void lock_shared() {
     while (locked == -1) {
-      this_coro->SetBlocked(state);
+      this_coro->SetBlocked(state());
       {
         CoroCtxGuard guard;
         CoroYield();
@@ -111,12 +118,17 @@ struct shared_mutex_r {
   }
   as_atomic void unlock_shared() {
     --locked;
-    block_manager.UnblockAllOn(state.addr);
+    block_manager.UnblockAllOn(addr());
   }
 
  private:
+  [[nodiscard]] std::intptr_t addr() const {
+    return reinterpret_cast<std::intptr_t>(&locked);
+  }
+
+  [[nodiscard]] BlockState state() const { return {addr(), locked}; }
+
   int locked{0};
-  BlockState state{reinterpret_cast<std::intptr_t>(&locked), locked};
 };
 
 /**

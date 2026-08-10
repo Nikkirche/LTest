@@ -150,6 +150,7 @@ void CoroBase::Terminate() {
   returned = true;
   fstate = {};
   clearWakeupCondition();
+  ltest::CoroCtxGuard guard;
   DestroyContext();
 }
 

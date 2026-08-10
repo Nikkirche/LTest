@@ -220,7 +220,7 @@ extern int pthread_rwlock_destroy(pthread_rwlock_t *__rwlock) __THROW {
 }
 
 /* Acquire read lock for RWLOCK.  */
-extern int pthread_rwlock_rdlock(pthread_rwlock_t *__rwlock) __THROWNL {
+extern int pthread_rwlock_rdlock(pthread_rwlock_t *__rwlock) {
   PTHREAD_MOCK_INIT_ROUTINE
   auto &it = InsertSharedLock(__rwlock);
   return std::visit(Overloads{[](auto &a) {
@@ -238,7 +238,7 @@ extern int pthread_rwlock_tryrdlock(pthread_rwlock_t *__rwlock) {
 }
 
 /* Acquire write lock for RWLOCK.  */
-extern int pthread_rwlock_wrlock(pthread_rwlock_t *__rwlock) __THROWNL {
+extern int pthread_rwlock_wrlock(pthread_rwlock_t *__rwlock) {
   PTHREAD_MOCK_INIT_ROUTINE
   auto &it = InsertSharedLock(__rwlock);
   return std::visit(Overloads{[](auto &a) {
