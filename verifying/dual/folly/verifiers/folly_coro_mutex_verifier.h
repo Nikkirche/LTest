@@ -15,7 +15,7 @@
 #include "runtime/include/strategy_verifier.h"
 #include "../../../specs/folly/coro_mutex.h"
 
-struct FollyCoroMutexVerifierBase : DefaultStrategyTaskVerifier {
+struct FollyCoroMutexVerifierBase : ltest::DefaultStrategyTaskVerifier {
   // We intentionally use an actor/thread-affine ownership model here.
   //
   // Why:
@@ -32,7 +32,7 @@ struct FollyCoroMutexVerifierBase : DefaultStrategyTaskVerifier {
   // This matches blocking-style verifier design and is compatible with
   // scheduler cleanup ReleaseTask(thread_id).
 
-  bool Verify(const std::string& task_name, size_t thread_id) {
+  bool Verify(const std::string& task_name, size_t thread_id, bool) {
     if (task_name == "lock" || task_name == "try_lock") {
       // Recursive acquire by the same actor is forbidden in this model.
       return !IsOwner(thread_id);
@@ -52,17 +52,17 @@ struct FollyCoroMutexVerifierBase : DefaultStrategyTaskVerifier {
     //
     // For this verifier we update ownership only on successful completion:
     // - try_lock() that returned true
-    // - lock() that FinishedNormally()
+    // - lock() that returned
     // - unlock()
   }
 
-  void OnFinished(Task& task, size_t thread_id) {
+  void OnFinished(ltest::Task& task, size_t thread_id) {
     const std::string task_name = std::string(task->GetName());
 
     if (task_name == "lock") {
       // For dual lock(), ownership is acquired only after FOLLOWUP completes
       // and the task finishes normally.
-      if (task->FinishedNormally()) {
+      if (task->IsReturned()) {
         owner_thread_ = thread_id;
       }
       return;
@@ -110,6 +110,7 @@ struct FollyCoroMutexVerifierBase : DefaultStrategyTaskVerifier {
 };
 
 using FollyCoroMutexVerifier =
-    ReservePolicyVerifier<spec::FollyCoroMutex, FollyCoroMutexVerifierBase>;
+    ltest::ReservePolicyVerifier<spec::FollyCoroMutex,
+                                  FollyCoroMutexVerifierBase>;
 
 #endif  // LTEST_FOLLY_CORO_MUTEX_VERIFIER_H

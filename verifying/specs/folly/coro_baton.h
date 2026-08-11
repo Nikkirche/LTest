@@ -69,25 +69,25 @@ struct FollyCoroBaton {
       return std::nullopt;
     }
     ready_waits.erase(op_id);
-    return void_v;
+    return ltest::void_v;
   }
 
   static auto GetDualMethods() {
     using S = FollyCoroBaton;
-    DualMethodMap<S> m;
+    ltest::DualMethodMap<S> m;
 
-    m.emplace("post", DualNonBlockingMethod<S>{
+    m.emplace("post", ltest::DualNonBlockingMethod<S>{
                           [](S* s, void* args) { return s->Post(args); }});
-    m.emplace("reset", DualNonBlockingMethod<S>{
+    m.emplace("reset", ltest::DualNonBlockingMethod<S>{
                            [](S* s, void* args) { return s->Reset(args); }});
-    m.emplace("ready", DualNonBlockingMethod<S>{
+    m.emplace("ready", ltest::DualNonBlockingMethod<S>{
                            [](S* s, void* args) { return s->Ready(args); }});
 
-    DualRequestMethod<S> wait_req =
+    ltest::DualRequestMethod<S> wait_req =
         [](S* s, void* /*args*/, int op_id) { s->RequestWait(op_id); };
-    DualFollowUpMethod<S> wait_fol =
+    ltest::DualFollowUpMethod<S> wait_fol =
         [](S* s, void* /*args*/, int op_id) { return s->FollowUpWait(op_id); };
-    m.emplace("wait", DualBlockingMethod<S>{wait_req, wait_fol});
+    m.emplace("wait", ltest::DualBlockingMethod<S>{wait_req, wait_fol});
 
     return m;
   }
