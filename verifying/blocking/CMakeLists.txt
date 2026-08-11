@@ -140,4 +140,16 @@ else()
         )
         add_dependencies(${target} preload)
     endforeach(source_name ${FOLLY_SOURCE_TARGET_LIST})
+
+    add_integration_test("folly_shared_mutex" "folly" FALSE
+            folly_sharedmutex --strategy pct --rounds 10000
+    )
+
+    add_integration_test("folly_rwspinlock" "folly" FALSE
+            folly_rwspinlock --strategy pct --rounds 10000
+    )
+
+    add_integration_test("folly_flatcombining_queue" "folly" FALSE
+            folly_flatcombining_queue --strategy pct --rounds 10000
+    )
 endif()
