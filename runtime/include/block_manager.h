@@ -7,6 +7,8 @@
 #include "block_state.h"
 #include "coro_ctx_guard.h"
 
+namespace ltest {
+
 struct CoroBase;
 
 struct BlockManager {
@@ -16,7 +18,7 @@ struct BlockManager {
   std::unordered_map<std::uintptr_t, std::deque<CoroBase *>> queues;
 
   void BlockOn(BlockState state, CoroBase *coro) {
-    ltest::SchedCtxGuard guard;
+    SchedCtxGuard guard;
     if (!queues.contains(state.addr)) {
       queues[state.addr] = std::deque<CoroBase *>{};
     }
@@ -24,14 +26,14 @@ struct BlockManager {
   }
 
   bool IsBlocked(const BlockState &state, CoroBase *coro) {
-    ltest::SchedCtxGuard guard;
+    SchedCtxGuard guard;
     return state.addr &&
            std::find(queues[state.addr].begin(), queues[state.addr].end(),
                      coro) != queues[state.addr].end();
   }
 
   std::size_t UnblockOn(std::intptr_t addr, std::size_t max_wakes) {
-    ltest::SchedCtxGuard guard;
+    SchedCtxGuard guard;
     if (!queues.contains(addr)) [[unlikely]] {
       return 0;
     }
@@ -44,7 +46,7 @@ struct BlockManager {
   }
 
   void UnblockAllOn(std::intptr_t addr) {
-    ltest::SchedCtxGuard guard;
+    SchedCtxGuard guard;
     auto queue_it = queues.find(addr);
     if (queue_it == queues.end()) {
       return;
@@ -56,3 +58,5 @@ struct BlockManager {
 };
 
 inline BlockManager block_manager;
+
+}  // namespace ltest

@@ -6,15 +6,19 @@
 /// to call methods annotated with non_atomic in scheduler fiber
 /// 2. incapsulating syscall hook
 
-bool ltest_coro_ctx = 0;
+namespace ltest {
 
-ltest::CoroCtxGuard::CoroCtxGuard() { ltest_coro_ctx = true; }
+bool ltest_coro_ctx = false;
 
-ltest::CoroCtxGuard::~CoroCtxGuard() { ltest_coro_ctx = false; }
+CoroCtxGuard::CoroCtxGuard() { ltest_coro_ctx = true; }
 
-ltest::SchedCtxGuard::SchedCtxGuard() {
+CoroCtxGuard::~CoroCtxGuard() { ltest_coro_ctx = false; }
+
+SchedCtxGuard::SchedCtxGuard() {
   tmp = ltest_coro_ctx;
   ltest_coro_ctx = false;
 }
 
-ltest::SchedCtxGuard::~SchedCtxGuard() { ltest_coro_ctx = tmp; }
+SchedCtxGuard::~SchedCtxGuard() { ltest_coro_ctx = tmp; }
+
+}  // namespace ltest

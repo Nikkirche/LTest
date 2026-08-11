@@ -7,6 +7,8 @@
 
 #include "scheduler.h"
 
+namespace ltest {
+
 // https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf
 // K represents the maximal number of potential switches in the program
 // Although it's impossible to predict the exact number of switches(since it's
@@ -297,3 +299,5 @@ struct PctStrategy : public BaseStrategyWithThreads<TargetObj, Verifier> {
   std::vector<size_t> priority_change_points;
   std::mt19937 rng;
 };
+
+}  // namespace ltest

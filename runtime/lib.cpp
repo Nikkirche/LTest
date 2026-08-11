@@ -10,6 +10,8 @@
 #include "logger.h"
 #include "value_wrapper.h"
 
+namespace ltest {
+
 // See comments in the lib.h.
 Task this_coro{};
 int this_thread_id = -1;
@@ -22,12 +24,9 @@ namespace {
 std::atomic<std::uint64_t> g_dual_event_seqno{0};
 }  // namespace
 
-namespace ltest {
 std::vector<TaskBuilder> task_builders{};
-}
 
 // Test failure tracking for litmus tests, which could expectedly fail.
-namespace ltest {
 namespace {
 bool test_failed{false};
 std::string test_failure_message{};
@@ -46,12 +45,11 @@ void ClearTestFailure() {
   test_failed = false;
   test_failure_message.clear();
 }
-}  // namespace ltest
 
 Task CoroBase::GetPtr() { return shared_from_this(); }
 
 void CoroBase::EmitDualEvent(DualEventKind kind, ValueWrapper result) {
-  ltest::SchedCtxGuard guard;
+  SchedCtxGuard guard;
   pending_dual_events_.push_back(
       DualEvent{kind, g_dual_event_seqno.fetch_add(1, std::memory_order_relaxed),
                 std::move(result)});
@@ -76,7 +74,7 @@ void CoroBase::Resume(size_t resumed_thread_id) {
   boost::context::fiber_context([coro](boost::context::fiber_context&& ctx) {
     sched_ctx = std::move(ctx);
     {
-      ltest::CoroCtxGuard guard{};
+      CoroCtxGuard guard{};
       coro->ctx = std::move(coro->ctx).resume();
     }
     return std::move(sched_ctx);
@@ -86,12 +84,12 @@ void CoroBase::Resume(size_t resumed_thread_id) {
 }
 
 void CoroBase::setWakeupCondition(std::function<bool()> cond) {
-  ltest::SchedCtxGuard guard;
+  SchedCtxGuard guard;
   wakeup_condition_ = std::move(cond);
 }
 
 void CoroBase::clearWakeupCondition() {
-  ltest::SchedCtxGuard guard;
+  SchedCtxGuard guard;
   wakeup_condition_ = nullptr;
 }
 
@@ -121,24 +119,28 @@ std::string_view CoroBase::GetName() const { return name; }
 
 bool CoroBase::IsReturned() const { return returned; }
 
+}  // namespace ltest
+
 extern "C" void CoroYield() {
-  if (!ltest_coro_ctx) [[unlikely]] {
+  if (!ltest::ltest_coro_ctx) [[unlikely]] {
     return;
   }
-  assert(this_coro && sched_ctx);
-  ltest_coro_ctx = false;
+  assert(ltest::this_coro && ltest::sched_ctx);
+  ltest::ltest_coro_ctx = false;
   boost::context::fiber_context([](boost::context::fiber_context&& ctx) {
-    this_coro->ctx = std::move(ctx);
-    return std::move(sched_ctx);
+    ltest::this_coro->ctx = std::move(ctx);
+    return std::move(ltest::sched_ctx);
   }).resume();
-  ltest_coro_ctx = true;
+  ltest::ltest_coro_ctx = true;
 }
 
 extern "C" void CoroutineStatusChange(char* name, bool start) {
   // assert(!coroutine_status.has_value());
-  coroutine_status.emplace(name, start);
+  ltest::coroutine_status.emplace(name, start);
   CoroYield();
 }
+
+namespace ltest {
 
 void CoroBase::DestroyContext() {
   if (ctx) {
@@ -150,7 +152,7 @@ void CoroBase::Terminate() {
   returned = true;
   fstate = {};
   clearWakeupCondition();
-  ltest::CoroCtxGuard guard;
+  CoroCtxGuard guard;
   DestroyContext();
 }
 
@@ -158,3 +160,5 @@ void CoroBase::TerminateWith(const ValueWrapper& value) {
   Terminate();
   ret = value;
 }
+
+}  // namespace ltest

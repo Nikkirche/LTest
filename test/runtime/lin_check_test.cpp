@@ -8,6 +8,7 @@
 #include "lincheck_dual.h"
 #include "lincheck_recursive.h"
 #include "stackfulltask_mock.h"
+using namespace ltest;
 
 struct Counter {
   int count = 0;
@@ -384,7 +385,7 @@ DualChecker MakeDualChecker(int initial_available = 0) {
                [](DualQueueState* state, [[maybe_unused]] void* args,
                   int op_id) { state->requested.insert(op_id); },
                [](DualQueueState* state, [[maybe_unused]] void* args,
-                  int op_id) -> std::optional<ValueWrapper> {
+                  int op_id) -> std::optional<ltest::ValueWrapper> {
                  if (!state->requested.contains(op_id) ||
                      state->available == 0) {
                    return std::nullopt;
@@ -409,7 +410,7 @@ DualRejectPendingRequestChecker MakeDualRejectPendingRequestChecker() {
                },
                [](DualRejectPendingRequestState* state,
                   [[maybe_unused]] void* args,
-                  int op_id) -> std::optional<ValueWrapper> {
+                  int op_id) -> std::optional<ltest::ValueWrapper> {
                  if (!state->pending.contains(op_id)) {
                    return std::nullopt;
                  }

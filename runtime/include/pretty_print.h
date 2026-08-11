@@ -14,6 +14,8 @@
 #include "lincheck_dual.h"
 #include "logger.h"
 
+namespace ltest {
+
 using std::string;
 using std::to_string;
 
@@ -348,3 +350,5 @@ struct PrettyPrinter {
     PrintMethodCall(task, fp);
   }
 };
+
+}  // namespace ltest

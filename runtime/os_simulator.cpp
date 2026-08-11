@@ -3,7 +3,13 @@
 #include "block_manager.h"
 #include "blocking_primitives.h"
 
+namespace ltest {
+
 std::optional<std::variant<CreatedThreadInfo, JoinThreadInfo>> thread_info;
+uint64_t current_max_thread_id = 0;
+
+}  // namespace ltest
+
 extern "C" {
 __attribute__((weak)) extern void* __start_ltest_init[];
 __attribute__((weak)) extern void* __stop_ltest_init[];
@@ -13,11 +19,15 @@ __attribute__((weak)) extern void* __stop_ltest_init[];
 void ResetStaticVariables() {
   for (auto p = __start_ltest_init; p != __stop_ltest_init; ++p) {
     auto fn = reinterpret_cast<void (*)()>(*p);
-    fn();
+    //it can be padding, which should be ignored
+    if (fn != nullptr) {
+      fn();
+    }
   }
 }
 
-uint64_t current_max_thread_id = 0;
+namespace ltest {
+
 template <class... Ts>
 struct Overloads : Ts... {
   using Ts::operator()...;
@@ -81,3 +91,5 @@ void OSSimulator::UpdateOSState(size_t thread, Scheduler::SeqHistory& seq,
              *thread_info);
   thread_info.reset();
 }
+
+}  // namespace ltest

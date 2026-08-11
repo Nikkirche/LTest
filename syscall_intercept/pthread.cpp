@@ -8,6 +8,7 @@
 #include "runtime/include/blocking_primitives.h"
 #include "runtime/include/coro_ctx_guard.h"
 #include "runtime/include/os_simulator.h"
+using namespace ltest;
 
 [[nodiscard]] bool ShouldUseMock() {
   return ltest_initialized && ltest_coro_ctx;

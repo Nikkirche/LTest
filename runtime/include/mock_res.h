@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <deque>
 
+namespace ltest {
+
 class MemoryHandler {
   // this memory is acuired using malloc/new
   std::deque<void*> memory;
@@ -14,6 +16,8 @@ class MemoryHandler {
 };
 
 extern MemoryHandler* memory_handler;
+
+}  // namespace ltest
 
 extern "C" void* LtestMemAlloc(std::size_t size);
 

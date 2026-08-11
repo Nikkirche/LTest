@@ -1,6 +1,8 @@
 #pragma once
 #include "scheduler.h"
 
+namespace ltest {
+
 template <typename TargetObj, StrategyTaskVerifier Verifier>
 struct TLAStrategy : public BaseStrategyWithThreads<TargetObj, Verifier> {
   using TargetFactory =
@@ -135,3 +137,5 @@ struct TLAStrategy : public BaseStrategyWithThreads<TargetObj, Verifier> {
   StableVector<Frame> frames;
   bool is_exhausted = false;
 };
+
+}  // namespace ltest

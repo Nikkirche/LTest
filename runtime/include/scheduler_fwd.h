@@ -7,6 +7,8 @@
 #include "lincheck.h"
 #include "lincheck_dual.h"
 
+namespace ltest {
+
 struct Strategy;
 
 enum class ReplayMode {
@@ -119,3 +121,5 @@ using StrategyExplorationMinimizor = StrategyExplorationMinimizorT<HistoryEvent>
 using DualRoundMinimizor = RoundMinimizorT<DualHistoryEvent>;
 using DualSameInterleavingMinimizor = SameInterleavingMinimizorT<DualHistoryEvent>;
 using DualStrategyExplorationMinimizor = StrategyExplorationMinimizorT<DualHistoryEvent>;
+
+}  // namespace ltest

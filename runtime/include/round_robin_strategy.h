@@ -4,6 +4,8 @@
 
 #include "pick_strategy.h"
 
+namespace ltest {
+
 template <typename TargetObj, StrategyTaskVerifier Verifier>
 struct RoundRobinStrategy : PickStrategy<TargetObj, Verifier> {
   using TargetFactory =
@@ -60,3 +62,5 @@ struct RoundRobinStrategy : PickStrategy<TargetObj, Verifier> {
 
   size_t next_task;
 };
+
+}  // namespace ltest

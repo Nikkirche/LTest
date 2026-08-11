@@ -5,7 +5,7 @@
 #include "../../runtime/include/verifying.h"
 
 constexpr int limit = 3;
-inline std::string Print(const ValueWrapper &v) {
+inline std::string Print(const ltest::ValueWrapper &v) {
   auto val = v.GetValue<std::optional<int>>();
   if (!val.has_value()) {
     return "{}";
@@ -18,13 +18,13 @@ struct UniqueArgsRef {
   size_t called = 0;
   UniqueArgsRef() {}
   UniqueArgsRef &operator=(const UniqueArgsRef &oth) { return *this; }
-  ValueWrapper Get(size_t i) {
+  ltest::ValueWrapper Get(size_t i) {
     called++;
     return {called == limit ? std::exchange(called, 0) : std::optional<int>(),
-            GetDefaultCompator<std::optional<int>>(), Print};
+            ltest::GetDefaultCompator<std::optional<int>>(), Print};
   }
 
-  using MethodT = std::function<ValueWrapper(UniqueArgsRef *l, void *args)>;
+  using MethodT = std::function<ltest::ValueWrapper(UniqueArgsRef *l, void *args)>;
   static auto GetMethods() {
     MethodT get = [](UniqueArgsRef *l, void *args) {
       auto real_args = reinterpret_cast<std::tuple<size_t> *>(args);
@@ -68,7 +68,7 @@ struct UniqueArgsVerifier {
     return true;
   }
 
-  void OnFinished(Task &, size_t) {
+  void OnFinished(ltest::Task &, size_t) {
     // intentionally do nothing
   }
 

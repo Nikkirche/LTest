@@ -9,6 +9,8 @@
 #include "lib.h"
 #include "value_wrapper.h"
 
+namespace ltest {
+
 struct Response {
   Response(const Task& task, ValueWrapper result, int thread_id);
 
@@ -238,3 +240,5 @@ bool LinearizabilityChecker<
 
   return true;
 }
+
+}  // namespace ltest

@@ -2,6 +2,8 @@
 
 #include "runtime/include/coro_ctx_guard.h"
 #include "runtime/include/mock_res.h"
+using namespace ltest;
+
 static void *(*real_calloc)(size_t nmemb, size_t size);
 static void *(*real_malloc)(size_t size);
 static void (*real_free)(void *ptr);
@@ -20,7 +22,10 @@ void *malloc(size_t size) {
   return p;
 }
 
+namespace ltest {
 bool inside_free = false;
+}  // namespace ltest
+
 void free(void *ptr) {
   if (inside_free) {
     // write(2,"leak\n", 5);

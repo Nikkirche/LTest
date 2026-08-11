@@ -26,7 +26,7 @@ struct BufferedChannelVerifier {
     }
   }
 
-  void OnFinished(Task& task, size_t thread_id) {
+  void OnFinished(ltest::Task& task, size_t thread_id) {
     auto task_name = task->GetName();
     if (task_name == "Send") {
       --senders_;

@@ -6,6 +6,8 @@
 
 #include "scheduler.h"
 
+namespace ltest {
+
 template <typename TargetObj, StrategyTaskVerifier Verifier>
 struct PickStrategy : public BaseStrategyWithThreads<TargetObj, Verifier> {
   virtual std::optional<size_t> Pick() = 0;
@@ -48,3 +50,5 @@ struct PickStrategy : public BaseStrategyWithThreads<TargetObj, Verifier> {
  protected:
   size_t next_task = 0;
 };
+
+}  // namespace ltest

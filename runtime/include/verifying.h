@@ -475,8 +475,9 @@ int RunDual(int argc, char *argv[]) {
 // parenthesis `()` manually
 #define LTEST_ENTRYPOINT(spec_obj_t, ...)                                    \
   int main(int argc, char *argv[]) {                                         \
-    std::vector<CustomRound> custom_rounds;                                  \
-    __VA_OPT__(std::vector<std::vector<std::vector<TaskBuilder>>> builders = \
+    std::vector<ltest::CustomRound> custom_rounds;                           \
+    __VA_OPT__(std::vector<std::vector<std::vector<ltest::TaskBuilder>>>      \
+                   builders =                                                \
                    {__VA_ARGS__};                                            \
                for (auto &v : builders) {                                    \
                  custom_rounds.emplace_back(std::move(v));                   \
@@ -486,8 +487,9 @@ int RunDual(int argc, char *argv[]) {
 
 #define LTEST_ENTRYPOINT_CONSTRAINT(spec_obj_t, strategy_verifier, ...)      \
   int main(int argc, char *argv[]) {                                         \
-    std::vector<CustomRound> custom_rounds;                                  \
-    __VA_OPT__(std::vector<std::vector<std::vector<TaskBuilder>>> builders = \
+    std::vector<ltest::CustomRound> custom_rounds;                           \
+    __VA_OPT__(std::vector<std::vector<std::vector<ltest::TaskBuilder>>>      \
+                   builders =                                                \
                    {__VA_ARGS__};                                            \
                for (auto &v : builders) {                                    \
                  custom_rounds.emplace_back(std::move(v));                   \

@@ -11,6 +11,8 @@
 #include "scheduler.h"
 #include "workload_policy.h"
 
+namespace ltest {
+
 // ----------------------------
 // Default verifier: allows everything
 // ----------------------------
@@ -254,3 +256,5 @@ struct ReservePolicyVerifier {
   std::unordered_set<int> started_task_ids_;
   std::size_t threads_{0};
 };
+
+}  // namespace ltest

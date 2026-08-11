@@ -11,11 +11,12 @@
 #include "scheduler_fwd.h"
 #include "stable_vector.h"
 
+namespace ltest {
+
 struct CreatedThreadInfo {
   std::function<void*(void*)> function;
   std::string name;
 };
-
 
 struct JoinThreadInfo {
   uint64_t thread_id;
@@ -41,3 +42,5 @@ class OSSimulator {
 protected:
   std::vector<StableVector<Task>> threads;
 };
+
+}  // namespace ltest

@@ -16,8 +16,18 @@
 
 #define panic() assert(false)
 
+extern "C" void CoroYield();
+extern "C" void CoroutineStatusChange(char* coroutine, bool start);
+
+namespace ltest {
+
 struct CoroBase;
 struct CoroutineStatus;
+
+struct CoroutineStatus {
+  std::string_view name;
+  bool has_started;
+};
 
 extern bool ltest_initialized;
 
@@ -30,12 +40,6 @@ extern boost::context::fiber_context sched_ctx;
 
 extern std::optional<CoroutineStatus> coroutine_status;
 
-struct CoroutineStatus {
-  std::string_view name;
-  bool has_started;
-};
-
-namespace ltest {
 struct TestFailure : public std::exception {
   explicit TestFailure(std::string message) : msg(std::move(message)) {}
   const char* what() const noexcept override { return msg.c_str(); }
@@ -48,10 +52,6 @@ void SetTestFailure(std::string message);
 bool HasTestFailure();
 const std::string& GetTestFailureMessage();
 void ClearTestFailure();
-}  // namespace ltest
-
-extern "C" void CoroYield();
-extern "C" void CoroutineStatusChange(char* coroutine, bool start);
 
 struct CoroBase : public std::enable_shared_from_this<CoroBase> {
   CoroBase(const CoroBase&) = delete;
@@ -212,9 +212,9 @@ struct Coro final : public CoroBase {
           try {
             self->ret =
                 std::apply(self->func, std::tuple_cat(this_arg, *real_args));
-          } catch (const ltest::TestFailure& ex) {
-            ltest::SchedCtxGuard guard;
-            ltest::SetTestFailure(ex.what());
+          } catch (const TestFailure& ex) {
+            SchedCtxGuard guard;
+            SetTestFailure(ex.what());
             self->ret = void_v;
           } catch (...) {
             throw;
@@ -258,3 +258,5 @@ struct TaskBuilder {
   std::string name;
   BuilderFunc builder_func;
 };
+
+}  // namespace ltest

@@ -27,6 +27,8 @@
 #include "wmm/wmm.h"
 #include "workload_policy.h"
 
+namespace ltest {
+
 struct TaskWithMetaData {
   Task& task;
   bool is_new;
@@ -90,7 +92,7 @@ struct OnlyOneTaskPerThreadVerifier {
   bool has_started = false;
 };
 
-namespace ltest::verifier_hooks {
+namespace verifier_hooks {
 
 template <class V>
 void OnRoundStart(V& v, std::size_t threads) {
@@ -109,7 +111,7 @@ void OnTaskStarted(V& v, const std::string& method, std::size_t thread_id,
 
 template <class V>
 bool VerifyStart(V& v, const std::string& method, std::size_t thread_id,
-                 const ltest::StartContext& ctx) {
+                 const StartContext& ctx) {
   if constexpr (requires { v.VerifyStart(method, thread_id, ctx); }) {
     return v.VerifyStart(method, thread_id, ctx);
   } else {
@@ -117,7 +119,7 @@ bool VerifyStart(V& v, const std::string& method, std::size_t thread_id,
   }
 }
 
-}  // namespace ltest::verifier_hooks
+}  // namespace verifier_hooks
 
 // Strategy is the general strategy interface which decides which task
 // will be the next one it can be implemented by different strategies, such as:
@@ -208,7 +210,7 @@ struct Strategy {
   // Checks whether starting this already-created task is semantically legal
   // in the current replay/exploration state.
   virtual bool VerifyTaskStart(Task& task, size_t thread_id,
-                               const ltest::StartContext& ctx) = 0;
+                               const StartContext& ctx) = 0;
 
   // Reports a semantic start of a task in replay/exploration mode.
   virtual void OnVerifierTaskStart(Task& task, size_t thread_id) = 0;
@@ -543,7 +545,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
       for (size_t i = 0; i < this->constructors.size(); ++i) {
         const TaskBuilder& constructor = this->constructors.at(i);
 
-        if (ltest::verifier_hooks::VerifyStart(
+        if (verifier_hooks::VerifyStart(
                 sched_checker, constructor.GetName(), thread_index, ctx) &&
             this->sched_checker.Verify(constructor.GetName(), thread_index, is_new)) {
           verified_constructor = i;
@@ -560,7 +562,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
 
       Task task =
           chosen.Build(this->state.get(), thread_index, this->new_task_id++);
-      ltest::verifier_hooks::OnTaskStarted(sched_checker, method_name,
+      verifier_hooks::OnTaskStarted(sched_checker, method_name,
                                            thread_index, task->GetId());
 
       threads[thread_index].emplace_back(std::move(task));
@@ -602,7 +604,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
     sched_checker.Reset();
     ResetWmmGraph(threads.size());
     ResetTargetState(target_factory());
-    ltest::verifier_hooks::OnRoundStart(sched_checker, threads_count);
+    verifier_hooks::OnRoundStart(sched_checker, threads_count);
 
     for (auto& thread : threads) {
       for (size_t i = 0; i < thread.size(); ++i) {
@@ -665,13 +667,17 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
 
  private:
   void ResetTargetState(std::unique_ptr<TargetObj> next = nullptr) {
-    ltest::CoroCtxGuard guard;
+    CoroCtxGuard guard;
     state = std::move(next);
   }
 };
 
+}  // namespace ltest
+
 #include "minimization.h"
 #include "minimization_smart.h"
+
+namespace ltest {
 
 static inline std::pair<bool, bool> GetUnfinishedAndRunnable(
     const Strategy& strategy, const std::unordered_set<int>* allowed_ids) {
@@ -702,9 +708,9 @@ static inline std::pair<bool, bool> GetUnfinishedAndRunnable(
   return {has_unfinished, has_runnable};
 }
 
-static inline ltest::StartContext BuildReplayStartContext(
+static StartContext BuildReplayStartContext(
     const Strategy& strategy, const std::unordered_set<int>& started_ids) {
-  ltest::StartContext ctx{};
+  StartContext ctx{};
   const auto& threads = strategy.GetTasks();
   ctx.threads = threads.size();
 
@@ -1273,7 +1279,6 @@ struct StrategyScheduler : public SchedulerWithReplay {
   DeadlockPolicy deadlock_policy;
 };
 
-
 // DualStrategyScheduler builds dual histories and supports replay/minimization.
 template <StrategyTaskVerifier Verifier>
 struct DualStrategyScheduler : public DualSchedulerWithReplay {
@@ -1809,3 +1814,5 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
   size_t minimization_runs;
   DeadlockPolicy deadlock_policy;
 };
+
+}  // namespace ltest

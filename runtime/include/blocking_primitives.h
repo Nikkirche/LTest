@@ -183,18 +183,19 @@ struct shared_mutex {
   int reader_count_{0};
   size_t write_ = -1;
 
-  ltest::condition_variable write_entered_;
-  ltest::condition_variable no_readers_;
+  condition_variable write_entered_;
+  condition_variable no_readers_;
 
-  ltest::mutex mutex_;
+  mutex mutex_;
 };
 
-}  // namespace ltest
-inline std::pmr::monotonic_buffer_resource resource(1000);
-inline std::pmr::unordered_map<pthread_mutex_t *, std::variant<ltest::mutex>>
-    mutexes(&resource);
+inline std::pmr::monotonic_buffer_resource pthread_mock_resource(1000);
+inline std::pmr::unordered_map<pthread_mutex_t *, std::variant<mutex>>
+    mutexes(&pthread_mock_resource);
 inline std::pmr::unordered_map<pthread_rwlock_t *,
-                               std::variant<ltest::shared_mutex>>
-    shared_mutexes(&resource);
-inline std::pmr::unordered_map<pthread_cond_t *, ltest::condition_variable>
-    cond_variables(&resource);
+                               std::variant<shared_mutex>>
+    shared_mutexes(&pthread_mock_resource);
+inline std::pmr::unordered_map<pthread_cond_t *, condition_variable>
+    cond_variables(&pthread_mock_resource);
+
+}  // namespace ltest

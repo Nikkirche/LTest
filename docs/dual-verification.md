@@ -104,10 +104,10 @@ LTEST_ENTRYPOINT_DUAL(spec_t);
 ```cpp
 static auto GetDualMethods() {
   using S = MySpec;
-  DualMethodMap<S> m;
+  ltest::DualMethodMap<S> m;
 
   m.emplace("try_op", DualNonBlockingMethod<S>{
-      [](S* s, void* args) -> ValueWrapper {
+      [](S* s, void* args) -> ltest::ValueWrapper {
         return s->TryOp(args);
       }});
 
@@ -117,7 +117,7 @@ static auto GetDualMethods() {
       };
 
   DualFollowUpMethod<S> wait_fol =
-      [](S* s, void* args, int op_id) -> std::optional<ValueWrapper> {
+      [](S* s, void* args, int op_id) -> std::optional<ltest::ValueWrapper> {
         return s->FollowUpWait(args, op_id);
       };
 

@@ -6,6 +6,8 @@
 #include "lib.h"
 #include "pick_strategy.h"
 
+namespace ltest {
+
 // Allows a random thread to work.
 // Randoms new task.
 template <typename TargetObj, StrategyTaskVerifier Verifier>
@@ -110,3 +112,5 @@ struct RandomStrategy : PickStrategy<TargetObj, Verifier> {
   std::vector<int> weights;
   std::vector<int> pick_weights;
 };
+
+}  // namespace ltest

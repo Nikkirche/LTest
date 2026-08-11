@@ -9,6 +9,8 @@
 #include "coro_ctx_guard.h"
 #include "logger.h"
 
+namespace ltest {
+
 MemoryHandler* memory_handler;
 
 void* MemoryHandler::RememberPointer(void* ptr) {
@@ -17,9 +19,8 @@ void* MemoryHandler::RememberPointer(void* ptr) {
 }
 
 void MemoryHandler::ForgetAboutPointer(void* ptr) {
-  auto it = std::find(memory.begin(), memory.end(),
-                         ptr);
-  if(it == memory.end()) {
+  auto it = std::find(memory.begin(), memory.end(), ptr);
+  if (it == memory.end()) {
     return;
   }
   memory.erase(it);
@@ -50,3 +51,4 @@ extern "C" void LtestMemDealloc(void* ptr) {
   }
   memory_handler->ForgetAboutPointer(ptr);
 }
+}  // namespace ltest

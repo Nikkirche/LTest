@@ -1,8 +1,8 @@
 #pragma once
 
-extern bool ltest_coro_ctx;
-
 namespace ltest {
+
+extern bool ltest_coro_ctx;
 
 struct CoroCtxGuard {
   CoroCtxGuard();

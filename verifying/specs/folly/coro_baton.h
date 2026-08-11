@@ -38,22 +38,22 @@ struct FollyCoroBaton {
     return p;
   }
 
-  ValueWrapper Post(void* /*args*/) {
+  ltest::ValueWrapper Post(void* /*args*/) {
     posted = true;
     while (!waiting.empty()) {
       ready_waits.insert(waiting.front());
       waiting.pop_front();
     }
-    return void_v;
+    return ltest::void_v;
   }
 
-  ValueWrapper Reset(void* /*args*/) {
+  ltest::ValueWrapper Reset(void* /*args*/) {
     posted = false;
-    return void_v;
+    return ltest::void_v;
   }
 
-  ValueWrapper Ready(void* /*args*/) {
-    return ValueWrapper(posted);
+  ltest::ValueWrapper Ready(void* /*args*/) {
+    return ltest::ValueWrapper(posted);
   }
 
   void RequestWait(int op_id) {
@@ -64,7 +64,7 @@ struct FollyCoroBaton {
     }
   }
 
-  std::optional<ValueWrapper> FollowUpWait(int op_id) {
+  std::optional<ltest::ValueWrapper> FollowUpWait(int op_id) {
     if (!ready_waits.contains(op_id)) {
       return std::nullopt;
     }

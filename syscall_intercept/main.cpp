@@ -2,7 +2,7 @@
 
 #include "runtime/include/value_wrapper.h"
 #include "runtime/include/verifying.h"
-
+using namespace ltest;
 namespace spec {
 
 struct FireAndForgetOptionsOverride {
@@ -41,13 +41,13 @@ class DummyChecker : public ModelChecker {
   bool Check(const std::vector<HistoryEvent> &) override { return true; }
 };
 extern "C" int ltest_main(int argc, char *argv[]) {
-  ltest_initialized = true;
+  ltest::ltest_initialized = true;
   spec::test_argc = argc;
   spec::test_argv = argv;
   ltest::SetOpts(spec::FireAndForgetOptionsOverride::GetOptions());
   ltest::Opts opts = ltest::ParseOpts();
 
-  logger_init(opts.verbose);
+  ltest::logger_init(opts.verbose);
 
   PrettyPrinter pretty_printer;
   DummyChecker checker;
