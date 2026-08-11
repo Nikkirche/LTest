@@ -224,7 +224,7 @@ llvmGetPassPluginInfo() {
                     return true;
                   }
                   if (Name == "globvariables") {
-                    mpm.addPass(GlobalVarsPass());
+                    mpm.addPass(ltest::GlobalVarsPass());
                     return true;
                   }
                   return false;
@@ -232,9 +232,9 @@ llvmGetPassPluginInfo() {
             PB.registerPipelineStartEPCallback(
                 [](ModulePassManager &MPM, OptimizationLevel Level) {
                   MPM.addPass(YieldInsertPass());
+                  MPM.addPass(ltest::GlobalVarsPass());
 #if defined(LTEST_EXTERNAL_LAUNCH)
                   MPM.addPass(MainReplacerPass());
-                  MPM.addPass(GlobalVarsPass());
 #endif
                 });
           }};
