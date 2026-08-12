@@ -135,8 +135,8 @@ struct Strategy {
   virtual void ResetExplorationState() = 0;
 
   // Returns the same data as `Next` method. However, it does not generate the
-  // round by inserting new tasks in it, but schedules the threads accoding to
-  // the strategy policy with previously genereated and saved round (used for
+  // round by inserting new tasks in it, but schedules the threads according to
+  // the strategy policy with previously generated and saved round (used for
   // round replaying functionality)
   virtual StrategyNextResult NextSchedule() = 0;
 
@@ -668,6 +668,9 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
  private:
   void ResetTargetState(std::unique_ptr<TargetObj> next = nullptr) {
     CoroCtxGuard guard;
+    // Target objects are per-round mocks; abandoning them keeps destructor
+    // side effects out of exploration reset.
+    (void)state.release();
     state = std::move(next);
   }
 };
