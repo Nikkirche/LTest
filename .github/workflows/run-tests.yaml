@@ -111,4 +111,4 @@ jobs:
             verifying/blocking/folly_flatcombining_queue
       - name: Run folly tests
         run: |
-          ctest --parallel 4 --test-dir build -L "folly" -V
+          ctest --parallel 4 --test-dir build -L "^folly$" -V

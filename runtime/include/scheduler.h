@@ -236,7 +236,7 @@ struct Strategy {
   virtual int GetNextTaskInThread(int thread_index) const = 0;
 
   void ResetWmmGraph(int threads_count) {
-    if (wmm_enabled) {
+    if (wmm::wmm_enabled) {
       wmm_graph.Reset(threads_count);
     }
   }
