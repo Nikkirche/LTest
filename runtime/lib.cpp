@@ -2,7 +2,9 @@
 
 #include <atomic>
 #include <cassert>
+#include <cstdlib>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -16,13 +18,42 @@ namespace ltest {
 Task this_coro{};
 int this_thread_id = -1;
 
-boost::context::fiber_context sched_ctx;
+context::fiber_context sched_ctx;
 std::optional<CoroutineStatus> coroutine_status;
 bool ltest_initialized = false;
 
 namespace {
 std::atomic<std::uint64_t> g_dual_event_seqno{0};
+std::unordered_set<void*> fiber_stacks;
 }  // namespace
+
+boost::context::stack_context context::AllocateFiberStack() {
+  SchedCtxGuard guard;
+  const size_t size = boost::context::stack_traits::default_size();
+  void* const memory = std::malloc(size);
+  if (memory == nullptr) {
+    throw std::bad_alloc();
+  }
+  fiber_stacks.insert(memory);
+  return {.size = size, .sp = static_cast<char*>(memory) + size};
+}
+
+void context::DeallocateFiberStack(
+    boost::context::stack_context& context) noexcept {
+  SchedCtxGuard guard;
+  void* const memory = static_cast<char*>(context.sp) - context.size;
+  fiber_stacks.erase(memory);
+  std::free(memory);
+}
+
+void context::FreeForgottenFiberStacks() noexcept {
+  SchedCtxGuard guard;
+  std::unordered_set<void*> stacks;
+  stacks.swap(fiber_stacks);
+  for (void* stack : stacks) {
+    std::free(stack);
+  }
+}
 
 std::vector<TaskBuilder> task_builders{};
 
@@ -71,7 +102,8 @@ void CoroBase::Resume(size_t resumed_thread_id) {
   // NOTE(kmitkin): Guard below prevents us from call CoroYield in the scheduler
   // coroutine, area that protected by it should be as small as possible to
   // reduce errors
-  boost::context::fiber_context([coro](boost::context::fiber_context&& ctx) {
+  context::fiber_context(
+                      [coro](context::fiber_context&& ctx) {
     sched_ctx = std::move(ctx);
     {
       CoroCtxGuard guard{};
@@ -127,7 +159,8 @@ extern "C" void CoroYield() {
   }
   assert(ltest::this_coro && ltest::sched_ctx);
   ltest::ltest_coro_ctx = false;
-  boost::context::fiber_context([](boost::context::fiber_context&& ctx) {
+  ltest::context::fiber_context(
+                      [](ltest::context::fiber_context&& ctx) {
     ltest::this_coro->ctx = std::move(ctx);
     return std::move(ltest::sched_ctx);
   }).resume();
@@ -144,7 +177,7 @@ namespace ltest {
 
 void CoroBase::DestroyContext() {
   if (ctx) {
-    ctx = boost::context::fiber_context{};
+    ctx.forget();
   }
 }
 

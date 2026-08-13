@@ -74,19 +74,11 @@ target_method_dual(genArgs, Ret, Target, method, Args...);
 5. после wakeup пишет `FollowUpInvoke`, вызывает `await_resume()` и пишет
    `FollowUpResponse`.
 
-Wrapper также управляет временем жизни awaitable-объектов через `KeepAlive`,
-отложенным уничтожением coroutine handles через `DeferDestroy`, и умеет
-вызывать `unregister()` у awaiter-а при принудительном завершении раунда.
-
-Для некоторых внешних awaiter-ов есть два opt-in флага:
+Для некоторых внешних awaiter-ов есть один opt-in флаг:
 
 - `ltest_emit_request_before_suspend = true` - request считается завершённым
   до вызова `await_suspend()`. Это нужно, если сам `await_suspend()` ожидает,
   что request уже виден checker-у.
-- `ltest_cleanup_before_target_destroy = true` - deferred cleanup выполняется
-  до уничтожения target-объекта. Это нужно для awaiter-ов, которые при cleanup
-  обращаются к объекту примитива.
-
 ## Контракт спецификации
 
 Дуальный target использует `SpecDual` и entrypoint:

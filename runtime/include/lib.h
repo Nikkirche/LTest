@@ -1,5 +1,5 @@
 #pragma once
-#include <boost/context/fiber.hpp>
+#include "fiber_context.h"
 #include <cassert>
 #include <cstdint>
 #include <exception>
@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "block_manager.h"
+#include "coro_ctx_guard.h"
 #include "value_wrapper.h"
 
 #define panic() assert(false)
@@ -36,7 +37,7 @@ extern std::shared_ptr<CoroBase> this_coro;
 extern int this_thread_id;
 
 // Scheduler context
-extern boost::context::fiber_context sched_ctx;
+extern context::fiber_context sched_ctx;
 
 extern std::optional<CoroutineStatus> coroutine_status;
 
@@ -104,18 +105,9 @@ struct CoroBase : public std::enable_shared_from_this<CoroBase> {
     return true;
   }
 
-  bool IsParked() const;
-
   // Dual metadata and task-local history buffer.
   void SetDual(bool v) { is_dual_task_ = v; }
   bool IsDual() const { return is_dual_task_; }
-
-  void SetCleanupBeforeTargetDestroy(bool v) {
-    cleanup_before_target_destroy_ = v;
-  }
-  bool CleanupBeforeTargetDestroy() const {
-    return cleanup_before_target_destroy_;
-  }
 
   enum class DualEventKind : std::uint8_t {
     RequestResponse = 0,
@@ -139,7 +131,7 @@ struct CoroBase : public std::enable_shared_from_this<CoroBase> {
 
   virtual ~CoroBase();
 
-  boost::context::fiber_context& GetCtx() { return ctx; }
+  context::fiber_context& GetCtx() { return ctx; }
 
  protected:
   CoroBase() = default;
@@ -158,11 +150,10 @@ struct CoroBase : public std::enable_shared_from_this<CoroBase> {
 
   BlockState fstate{};
   std::string_view name;
-  boost::context::fiber_context ctx;
+  context::fiber_context ctx;
 
  private:
   bool is_dual_task_{false};
-  bool cleanup_before_target_destroy_{false};
   std::vector<DualEvent> pending_dual_events_{};
 };
 
@@ -203,26 +194,24 @@ struct Coro final : public CoroBase {
     // The fiber only needs non-owning access to the object while it is alive.
     Coro* self = c.get();
 
-    c->ctx =
-        boost::context::fiber_context([self](boost::context::fiber_context&& ctx) {
-          auto real_args =
-              reinterpret_cast<std::tuple<Args...>*>(self->args.get());
-          auto this_arg =
-              std::tuple<Target*>{reinterpret_cast<Target*>(self->this_ptr)};
-          try {
-            self->ret =
-                std::apply(self->func, std::tuple_cat(this_arg, *real_args));
-          } catch (const TestFailure& ex) {
-            SchedCtxGuard guard;
-            SetTestFailure(ex.what());
-            self->ret = void_v;
-          } catch (...) {
-            throw;
-          }
-          self->returned = true;
-          ltest_coro_ctx = false;
-          return std::move(ctx);
-        });
+    c->ctx = context::fiber_context([self](context::fiber_context&& ctx) {
+        auto real_args = static_cast<std::tuple<Args...>*>(self->args.get());
+        auto this_arg =
+            std::tuple<Target*>{static_cast<Target*>(self->this_ptr)};
+        try {
+          self->ret =
+              std::apply(self->func, std::tuple_cat(this_arg, *real_args));
+        } catch (const TestFailure& ex) {
+          SchedCtxGuard guard;
+          SetTestFailure(ex.what());
+          self->ret = void_v;
+        } catch (...) {
+          throw;
+        }
+        self->returned = true;
+        ltest_coro_ctx = false;
+        return std::move(ctx);
+    });
 
     return c;
   }

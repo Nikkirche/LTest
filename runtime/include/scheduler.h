@@ -236,7 +236,7 @@ struct Strategy {
   virtual int GetNextTaskInThread(int thread_index) const = 0;
 
   void ResetWmmGraph(int threads_count) {
-    if (ltest::wmm::wmm_enabled) {
+    if (wmm_enabled) {
       wmm_graph.Reset(threads_count);
     }
   }
@@ -266,7 +266,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
     // must be called before instantiating `TargetObj`
     ResetWmmGraph(this->threads_count);
     round_schedule.resize(threads_count, -1);
-    state = this->target_factory();
+    ResetTargetState();
 
     constructors_distribution =
         std::uniform_int_distribution<std::mt19937::result_type>(
@@ -281,13 +281,16 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
       std::random_device dev;
       rng = std::mt19937(dev());
     } else {
-      rng = std::mt19937(static_cast<std::mt19937::result_type>(seed));
+      rng = std::mt19937(seed);
     }
 
-    ltest::verifier_hooks::OnRoundStart(sched_checker, threads_count);
+    verifier_hooks::OnRoundStart(sched_checker, threads_count);
   }
 
-  ~BaseStrategyWithThreads() override { ResetTargetState(); }
+  ~BaseStrategyWithThreads() override {
+    CoroCtxGuard guard;
+    (void)state.release();
+  }
 
   std::optional<std::tuple<Task&, int>> GetTask(int task_id) override {
     // TODO: can this be optimized?
@@ -370,10 +373,12 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
   void StartNextRound() override {
     this->SetAllowNewTasks(true);
     this->new_task_id = 0;
-    // also resets the state
-    this->TerminateTasks();  // TODO: what about different threads count for
-                             // wmm_graph?
+    this->TerminateRunningTasks();
+    this->sched_checker.Reset();
+    // Must precede target construction so atomics register in the new graph.
+    this->ResetWmmGraph(this->threads.size());
     ResetOSState();
+    this->ResetTargetState();
     // this could happen if we run custom scenarios
     // (which could have arbitrary number of threads)
     if (this->threads.size() != this->threads_count) {
@@ -404,7 +409,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
     sched_checker.Reset();
     ResetWmmGraph(threads.size());
     ResetOSState();
-    ResetTargetState(target_factory());
+    ResetTargetState();
 
     // New round/replay starts from fresh target state, so verifier state
     // must also be reset.
@@ -428,7 +433,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
     this->round_schedule.resize(custom_threads_count, -1);
     this->sched_checker.Reset();
     ResetWmmGraph(custom_threads_count);
-    this->ResetTargetState(this->target_factory());
+    this->ResetTargetState();
 
     for (size_t current_thread = 0; current_thread < custom_threads_count;
          ++current_thread) {
@@ -580,7 +585,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
     // TODO: for custom scenarios threads number might differ, check for places
     // where `threads.size()` cannot be used
     ResetWmmGraph(threads.size());
-    ResetTargetState(std::make_unique<TargetObj>());
+    ResetTargetState();
   }
 
   void TerminateRunningTasks() {
@@ -603,7 +608,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
     this->SetAllowNewTasks(true);
     sched_checker.Reset();
     ResetWmmGraph(threads.size());
-    ResetTargetState(target_factory());
+    ResetTargetState();
     verifier_hooks::OnRoundStart(sched_checker, threads_count);
 
     for (auto& thread : threads) {
@@ -666,12 +671,12 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
   std::mt19937 rng;
 
  private:
-  void ResetTargetState(std::unique_ptr<TargetObj> next = nullptr) {
+  void ResetTargetState() {
     CoroCtxGuard guard;
     // Target objects are per-round mocks; abandoning them keeps destructor
     // side effects out of exploration reset.
     (void)state.release();
-    state = std::move(next);
+    state = target_factory();
   }
 };
 
@@ -1301,7 +1306,7 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
         minimization_runs(minimization_runs),
         deadlock_policy(deadlock_policy) {}
 
-  DualSchedulerWithReplay::Result Run() override {
+  Result Run() override {
     for (size_t i = 0; i < max_rounds; ++i) {
       log() << "\nrun round: " << i << "\n\n";
       auto res = RunRound();
@@ -1311,7 +1316,7 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
           log() << "Full nonlinear scenario (DUAL):\n";
           pretty_printer.PrettyPrint(res->seq, threads_num, log());
 
-          if (res->reason == DualSchedulerWithReplay::NonLinearizableHistory::
+          if (res->reason == NonLinearizableHistory::
                                  Reason::DEADLOCK) {
             log() << "Skipping replay minimization for deadlock.\n";
           } else {
@@ -1350,13 +1355,13 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
   }
 
  protected:
-  inline void EmitStartEvent(DualSchedulerWithReplay::SeqHistory& seq,
+  void EmitStartEvent(SeqHistory& seq,
                              Task& task, bool is_new, int thread_id) {
     AppendDualStartEvent(seq, task, is_new, thread_id);
   }
 
-  inline void DrainDual(Task& task, int thread_id,
-                        DualSchedulerWithReplay::SeqHistory& seq) {
+  void DrainDual(Task& task, int thread_id,
+                        SeqHistory& seq) {
     (void)task;
     (void)thread_id;
     AppendDrainedDualEvents(seq, strategy);
@@ -1370,7 +1375,7 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
   };
 
   std::optional<RollbackCandidate> FindRollbackCandidate(
-      const DualSchedulerWithReplay::FullHistory& full) {
+      const FullHistory& full) {
     std::unordered_set<int> seen;
 
     for (auto it = full.rbegin(); it != full.rend(); ++it) {
@@ -1417,8 +1422,8 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
     return std::nullopt;
   }
 
-  DualSchedulerWithReplay::Result TryRollbackDeadlock(
-      const DualSchedulerWithReplay::FullHistory& full) {
+  Result TryRollbackDeadlock(
+      const FullHistory& full) {
     auto candidate = FindRollbackCandidate(full);
     if (!candidate.has_value()) {
       return std::nullopt;
@@ -1455,14 +1460,14 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
     return std::nullopt;
   }
 
-  DualSchedulerWithReplay::Result HandleDeadlock(
-      const DualSchedulerWithReplay::FullHistory& full,
-      const DualSchedulerWithReplay::SeqHistory& seq) {
+  Result HandleDeadlock(
+      const FullHistory& full,
+      const SeqHistory& seq) {
     if (deadlock_policy != DeadlockPolicy::Fail) {
       if (!checker.Check(seq)) {
-        return DualSchedulerWithReplay::NonLinearizableHistory{
+        return NonLinearizableHistory{
             full, seq,
-            DualSchedulerWithReplay::NonLinearizableHistory::Reason::
+            NonLinearizableHistory::Reason::
                 NON_LINEARIZABLE_HISTORY};
       }
 
@@ -1487,15 +1492,15 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
       return std::nullopt;
     }
 
-    return DualSchedulerWithReplay::NonLinearizableHistory{
+    return NonLinearizableHistory{
         full, seq,
-        DualSchedulerWithReplay::NonLinearizableHistory::Reason::DEADLOCK};
+        NonLinearizableHistory::Reason::DEADLOCK};
   }
 
   // Runs a round with some interleaving while generating it (dual mode)
-  DualSchedulerWithReplay::Result RunRound() override {
-    DualSchedulerWithReplay::SeqHistory seq;
-    DualSchedulerWithReplay::FullHistory full;
+  Result RunRound() override {
+    SeqHistory seq;
+    FullHistory full;
 
     bool deadlock_detected{false};
 
@@ -1528,6 +1533,8 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
         if (*f == NEED_REPLAY) {
           log() << "restarted round\n";
           strategy.StartNextRound();
+          seq.clear();
+          full.clear();
           continue;
         }
       }
@@ -1561,22 +1568,22 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
     }
 
     if (!checker.Check(seq)) {
-      return DualSchedulerWithReplay::NonLinearizableHistory{
+      return NonLinearizableHistory{
           full, seq,
-          DualSchedulerWithReplay::NonLinearizableHistory::Reason::
+          NonLinearizableHistory::Reason::
               NON_LINEARIZABLE_HISTORY};
     }
 
     return std::nullopt;
   }
 
-  DualSchedulerWithReplay::Result ExploreRound(
+  Result ExploreRound(
       int runs, bool log_each_interleaving = false) override {
     for (int i = 0; i < runs; ++i) {
       strategy.ResetExplorationState();
 
-      DualSchedulerWithReplay::SeqHistory seq;
-      DualSchedulerWithReplay::FullHistory full;
+      SeqHistory seq;
+      FullHistory full;
 
       bool deadlock_detected{false};
 
@@ -1643,9 +1650,9 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
           if (checker.Check(seq)) {
             continue;
           }
-          return DualSchedulerWithReplay::NonLinearizableHistory{
+          return NonLinearizableHistory{
               full, seq,
-              DualSchedulerWithReplay::NonLinearizableHistory::Reason::
+              NonLinearizableHistory::Reason::
                   NON_LINEARIZABLE_HISTORY};
         }
 
@@ -1653,9 +1660,9 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
           continue;
         }
 
-        return DualSchedulerWithReplay::NonLinearizableHistory{
+        return NonLinearizableHistory{
             full, seq,
-            DualSchedulerWithReplay::NonLinearizableHistory::Reason::DEADLOCK};
+            NonLinearizableHistory::Reason::DEADLOCK};
       }
 
       if (log_each_interleaving) {
@@ -1664,9 +1671,9 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
       }
 
       if (!checker.Check(seq)) {
-        return DualSchedulerWithReplay::NonLinearizableHistory{
+        return NonLinearizableHistory{
             full, seq,
-            DualSchedulerWithReplay::NonLinearizableHistory::Reason::
+            NonLinearizableHistory::Reason::
                 NON_LINEARIZABLE_HISTORY};
       }
     }
@@ -1674,7 +1681,7 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
     return std::nullopt;
   }
 
-  DualSchedulerWithReplay::Result ReplayRound(
+  Result ReplayRound(
       const std::vector<int>& tasks_ordering, ReplayMode mode) override {
     strategy.ResetCurrentRound();
 
@@ -1684,8 +1691,8 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
       in_ordering.insert(id);
     }
 
-    DualSchedulerWithReplay::FullHistory full;
-    DualSchedulerWithReplay::SeqHistory seq;
+    FullHistory full;
+    SeqHistory seq;
 
     std::unordered_map<int, size_t> last_pos;
     last_pos.reserve(tasks_ordering.size());
@@ -1772,9 +1779,9 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
           GetUnfinishedAndRunnable(strategy, &in_ordering);
       if (has_unfinished && !has_runnable) {
         if (!checker.Check(seq)) {
-          return DualSchedulerWithReplay::NonLinearizableHistory{
+          return NonLinearizableHistory{
               full, seq,
-              DualSchedulerWithReplay::NonLinearizableHistory::Reason::
+              NonLinearizableHistory::Reason::
                   NON_LINEARIZABLE_HISTORY};
         }
         if (deadlock_policy != DeadlockPolicy::Fail) {
@@ -1783,16 +1790,16 @@ struct DualStrategyScheduler : public DualSchedulerWithReplay {
         if (!IsReportableDeadlockHistory(seq)) {
           return std::nullopt;
         }
-        return DualSchedulerWithReplay::NonLinearizableHistory{
+        return NonLinearizableHistory{
             full, seq,
-            DualSchedulerWithReplay::NonLinearizableHistory::Reason::DEADLOCK};
+            NonLinearizableHistory::Reason::DEADLOCK};
       }
     }
 
     if (!checker.Check(seq)) {
-      return DualSchedulerWithReplay::NonLinearizableHistory{
+      return NonLinearizableHistory{
           full, seq,
-          DualSchedulerWithReplay::NonLinearizableHistory::Reason::
+          NonLinearizableHistory::Reason::
               NON_LINEARIZABLE_HISTORY};
     }
 

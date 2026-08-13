@@ -202,18 +202,6 @@ constexpr bool EmitDualRequestBeforeSuspend() {
   }
 }
 
-template <class Awaiter>
-constexpr bool CleanupBeforeTargetDestroy() {
-  if constexpr (requires {
-                  { Awaiter::ltest_cleanup_before_target_destroy }
-                      -> std::convertible_to<bool>;
-                }) {
-    return Awaiter::ltest_cleanup_before_target_destroy;
-  } else {
-    return false;
-  }
-}
-
 // ------------------------------------
 // Atomic helpers for dual wrapper.
 //
@@ -253,10 +241,6 @@ as_atomic inline void dual_clear_wakeup_condition() {
   this_coro->clearWakeupCondition();
 }
 
-as_atomic inline void dual_set_cleanup_before_target_destroy(bool v) {
-  this_coro->SetCleanupBeforeTargetDestroy(v);
-}
-
 as_atomic inline void dual_unblock_all(std::intptr_t addr) {
   block_manager.UnblockAllOn(addr);
 }
@@ -272,12 +256,18 @@ template <typename Ret, typename Awaiter>
 inline ValueWrapper dual_finish_followup(Awaiter& aw) non_atomic {
   if constexpr (std::is_same_v<Ret, void>) {
     (void)aw.await_resume();
-    dual_emit_followup_done(void_v);
+    {
+      SchedCtxGuard guard;
+      dual_emit_followup_done(void_v);
+    }
     return void_v;
   } else {
     auto r = aw.await_resume();
     ValueWrapper vw{static_cast<Ret>(r)};
-    dual_emit_followup_done(vw);
+    {
+      SchedCtxGuard guard;
+      dual_emit_followup_done(vw);
+    }
     return vw;
   }
 }
@@ -461,8 +451,11 @@ struct TargetDualMethod {
 
         // ---- Immediate path ----
         if (ready) {
-          detail::dual_emit_request_done();
-          detail::dual_emit_followup_invoke();
+          {
+            SchedCtxGuard guard;
+            detail::dual_emit_request_done();
+            detail::dual_emit_followup_invoke();
+          }
           return detail::dual_finish_followup<Ret>(aw);
         }
 
@@ -516,6 +509,7 @@ struct TargetDualMethod {
         // await_suspend(). Awaiters that know this is required opt in with
         // ltest_emit_request_before_suspend.
         if (request_before_suspend) {
+          SchedCtxGuard guard;
           detail::dual_emit_request_done();
         }
 
@@ -538,15 +532,19 @@ struct TargetDualMethod {
 
         if (!suspended) {
           // No waiting => complete now.
-          if (!request_before_suspend) {
-            detail::dual_emit_request_done();
+          {
+            SchedCtxGuard guard;
+            if (!request_before_suspend) {
+              detail::dual_emit_request_done();
+            }
+            detail::dual_emit_followup_invoke();
           }
-          detail::dual_emit_followup_invoke();
           return detail::dual_finish_followup<Ret>(aw);
         }
 
         // Waiting => request phase finished now.
         if (!request_before_suspend) {
+          SchedCtxGuard guard;
           detail::dual_emit_request_done();
         }
 
@@ -557,21 +555,27 @@ struct TargetDualMethod {
           }
           if (st->ready) break;
 
-          detail::dual_set_blocked(BlockState{st->addr, 0});
+          {
+            SchedCtxGuard guard;
+            detail::dual_set_blocked(BlockState{st->addr, 0});
 
-          // If waker raced with SetBlocked() (woke before we enqueued),
-          // remove ourselves from the queue.
-          if (st->ready) {
-            detail::dual_unblock_all(st->addr);
-            break;
+            // If waker raced with SetBlocked() (woke before we enqueued),
+            // remove ourselves from the queue.
+            if (st->ready) {
+              detail::dual_unblock_all(st->addr);
+              break;
+            }
           }
 
           CoroYield();
         }
 
         assert(st->ready);
-        detail::dual_clear_wakeup_condition();
-        detail::dual_emit_followup_invoke();
+        {
+          SchedCtxGuard guard;
+          detail::dual_clear_wakeup_condition();
+          detail::dual_emit_followup_invoke();
+        }
         return detail::dual_finish_followup<Ret>(aw);
       };
 
@@ -581,8 +585,6 @@ struct TargetDualMethod {
       if constexpr (HasAwaitMethods<ReturnedT>) {
         ReturnedT awaiter_obj(
             std::invoke(method_ptr, obj, std::forward<Args>(args)...));
-        detail::dual_set_cleanup_before_target_destroy(
-            CleanupBeforeTargetDestroy<ReturnedT>());
         return run_with(awaiter_obj,
                         EmitDualRequestBeforeSuspend<ReturnedT>());
       } else {
@@ -594,14 +596,10 @@ struct TargetDualMethod {
 
         if constexpr (std::is_lvalue_reference_v<AwT>) {
           using AwaiterT = std::remove_reference_t<AwT>;
-          detail::dual_set_cleanup_before_target_destroy(
-              CleanupBeforeTargetDestroy<AwaiterT>());
           return run_with(aw, EmitDualRequestBeforeSuspend<AwaiterT>());
         } else {
           using AwaiterT = std::decay_t<AwT>;
           AwaiterT awaiter(std::move(aw));
-          detail::dual_set_cleanup_before_target_destroy(
-              CleanupBeforeTargetDestroy<AwaiterT>());
           return run_with(awaiter, EmitDualRequestBeforeSuspend<AwaiterT>());
         }
       }
@@ -618,7 +616,7 @@ struct TargetDualMethod {
       return coro;
     };
 
-    ltest::task_builders.push_back(
+    task_builders.push_back(
         TaskBuilder(std::string(method_name), builder));
   }
 };
