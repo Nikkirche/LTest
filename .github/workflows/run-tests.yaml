@@ -58,7 +58,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Install deps
-        run: apt update && apt install -y git ninja-build valgrind libboost-context-dev libgflags-dev libclang-19-dev
+        run: apt update && apt install -y git ninja-build valgrind libgoogle-glog-dev libsnappy-dev protobuf-compiler libboost-context-dev pkg-config libcapstone-dev libclang-19-dev && \
+          git clone https://github.com/Kirillog/syscall_intercept.git &&  \
+          cmake syscall_intercept -G Ninja -B syscall_intercept/build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang && \
+          cmake --build syscall_intercept/build --target install
       - name: Check out repository code
         uses: actions/checkout@v4
       - name: Install libcoro
@@ -85,9 +88,12 @@ jobs:
         run: |
           apt update && apt install -y git ninja-build valgrind libgoogle-glog-dev libsnappy-dev libclang-19-dev \
                     protobuf-compiler libboost-context-dev pkg-config libcapstone-dev \
-                    libboost-filesystem-dev libboost-program-options-dev \
-                    libboost-regex-dev libdouble-conversion-dev libfast-float-dev libevent-dev \
-                    libssl-dev libfmt-dev libgoogle-glog-dev zlib1g-dev
+                    libboost-filesystem-dev libboost-program-options-dev libboost-regex-dev \
+                    libdouble-conversion-dev libfast-float-dev libevent-dev libssl-dev libfmt-dev \
+                    libgoogle-glog-dev zlib1g-dev && \
+          git clone --depth=1 https://github.com/Kirillog/syscall_intercept.git &&  \
+          cmake syscall_intercept -G Ninja -B syscall_intercept/build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang && \
+          cmake --build syscall_intercept/build --target install
       - name: Check out repository code
         uses: actions/checkout@v4
       - name: Build folly ltest dependencies
