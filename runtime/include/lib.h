@@ -86,6 +86,7 @@ struct CoroBase : public std::enable_shared_from_this<CoroBase> {
 
   // Terminate the coroutine.
   void Terminate();
+  void DiscardRoundResults();
   void DestroyContext();
 
   void SetBlocked(const BlockState& state) {

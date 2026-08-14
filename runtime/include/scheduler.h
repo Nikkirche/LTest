@@ -594,6 +594,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
         if (!thread[i]->IsReturned()) {
           thread[i]->Terminate();
         }
+        thread[i]->DiscardRoundResults();
       }
     }
   }

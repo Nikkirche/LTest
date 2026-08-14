@@ -28,7 +28,6 @@ bool inside_free = false;
 
 void free(void *ptr) {
   if (inside_free) {
-    // write(2,"leak\n", 5);
     return;
   }
   // write(2, "free\n", 5);

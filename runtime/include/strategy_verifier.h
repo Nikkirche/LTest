@@ -39,10 +39,6 @@ struct DefaultStrategyTaskVerifier {
 
   inline void OnFinished(Task& /*task*/, std::size_t /*thread_id*/) {}
 
-  inline std::optional<std::string> ReleaseTask(std::size_t /*thread_id*/) {
-    return std::nullopt;
-  }
-
   inline void Reset() {}
 
   inline std::vector<std::string> GetDeadlockProgressMethods(
@@ -199,10 +195,6 @@ struct ReservePolicyVerifier {
 
   inline void OnFinished(Task& task, std::size_t thread_id) {
     base_.OnFinished(task, thread_id);
-  }
-
-  inline std::optional<std::string> ReleaseTask(std::size_t thread_id) {
-    return base_.ReleaseTask(thread_id);
   }
 
   inline void Reset() {

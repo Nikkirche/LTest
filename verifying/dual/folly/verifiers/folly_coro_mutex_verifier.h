@@ -29,8 +29,7 @@ struct FollyCoroMutexVerifierBase : ltest::DefaultStrategyTaskVerifier {
   //   - only owner may unlock;
   //   - an actor that already owns the mutex may not start lock/try_lock again.
   //
-  // This matches blocking-style verifier design and is compatible with
-  // scheduler cleanup ReleaseTask(thread_id).
+  // This matches blocking-style verifier design
 
   bool Verify(const std::string& task_name, size_t thread_id, bool) {
     if (task_name == "lock" || task_name == "try_lock") {
@@ -43,17 +42,6 @@ struct FollyCoroMutexVerifierBase : ltest::DefaultStrategyTaskVerifier {
 
     assert(false && "unexpected method name in FollyCoroMutexVerifier");
     return false;
-  }
-
-  void OnTaskStarted(const std::string& /*method*/,
-                     std::size_t /*thread_id*/,
-                     int /*task_id*/) {
-    // Nothing to do.
-    //
-    // For this verifier we update ownership only on successful completion:
-    // - try_lock() that returned true
-    // - lock() that returned
-    // - unlock()
   }
 
   void OnFinished(ltest::Task& task, size_t thread_id) {
@@ -87,17 +75,6 @@ struct FollyCoroMutexVerifierBase : ltest::DefaultStrategyTaskVerifier {
     }
 
     assert(false && "unexpected finished method name in FollyCoroMutexVerifier");
-  }
-
-  std::optional<std::string> ReleaseTask(size_t thread_id) {
-    if (IsOwner(thread_id)) {
-      return {"unlock"};
-    }
-    return std::nullopt;
-  }
-
-  void OnRoundStart(std::size_t /*threads*/) {
-    owner_thread_.reset();
   }
 
  private:

@@ -188,6 +188,12 @@ void CoroBase::Terminate() {
   DestroyContext();
 }
 
+void CoroBase::DiscardRoundResults() {
+  SchedCtxGuard guard;
+  ret = {};
+  pending_dual_events_.clear();
+}
+
 void CoroBase::TerminateWith(const ValueWrapper& value) {
   Terminate();
   ret = value;
