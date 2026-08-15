@@ -80,6 +80,8 @@ struct OnlyOneTaskPerThreadVerifier {
     return true;
   }
 
+  bool VerifyExisting(Task&, size_t) { return true; }
+
   void OnFinished(Task&, size_t) {
     // intentionally do nothing
   }
@@ -664,7 +666,6 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
                          // (in case if custom rounds are run, their threads
                          // count might be different from this value which is
                          // used for generated rounds only)
-  std::vector<StableVector<Task>> threads;
   std::vector<TaskBuilder> constructors;
   TargetFactory target_factory;
   std::uniform_int_distribution<std::mt19937::result_type>
