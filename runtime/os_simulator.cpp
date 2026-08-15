@@ -41,7 +41,6 @@ void OSSimulator::ResetOSState() {
   cond_variables.clear();
   shared_mutexes.clear();
   block_manager.UnblockAll();
-  context::fiber_context::FreeForgottenStacks();
   memory_handler->FreeAllMemory();
   current_max_thread_id = 0;
   ResetStaticVariables();

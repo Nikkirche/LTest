@@ -18,22 +18,23 @@
 
 namespace ltest::context {
 
+void FreeAbandonedFiberStack(boost::context::detail::fcontext_t) noexcept;
+
 inline void forget(boost::context::fiber& context) noexcept {
-  context.fctx_ = nullptr;
+  FreeAbandonedFiberStack(std::exchange(context.fctx_, nullptr));
 }
 
 boost::context::stack_context AllocateFiberStack();
 void DeallocateFiberStack(boost::context::stack_context&) noexcept;
-void FreeForgottenFiberStacks() noexcept;
 
 class stack_allocator {
  public:
   // Boost keeps a fiber's allocator and stack_context in its control record on
   // the fiber stack. An abandoned fiber cannot be resumed to reach that record
   // because Boost would force-unwind the stack and run user destructors. This
-  // allocator records stack ownership outside the fiber, allowing
-  // ResetOSState() to reclaim abandoned stacks. Completed fibers still call
-  // deallocate() through Boost as usual.
+  // allocator records stack ownership outside the fiber. Completed fibers
+  // call deallocate() through Boost; abandoned fibers release their own stack
+  // when fiber_context::forget() detaches their Boost handle.
   boost::context::stack_context allocate() { return AllocateFiberStack(); }
 
   void deallocate(boost::context::stack_context& context) noexcept {
@@ -75,10 +76,6 @@ class fiber_context {
   }
 
   void forget() noexcept { context::forget(context_); }
-
-  static void FreeForgottenStacks() noexcept {
-    FreeForgottenFiberStacks();
-  }
 
   explicit operator bool() const noexcept {
     return static_cast<bool>(context_);

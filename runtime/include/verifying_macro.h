@@ -25,11 +25,18 @@
 namespace ltest {
 extern std::vector<TaskBuilder> task_builders;
 
-inline void LtestFail(const char *expr, const char *file, unsigned int line, const char* func) {
-  SchedCtxGuard guard;
+inline std::string FormatTestFailure(const char *expr, const char *file,
+                                     unsigned int line, const char *func) {
   std::ostringstream oss;
-  oss << "test failed: " << expr << " at " << file << ":" << line << " in " << func;
-  throw ltest::TestFailure(oss.str());
+  oss << "test failed: " << expr << " at " << file << ":" << line << " in "
+      << func;
+  return oss.str();
+}
+
+[[noreturn]] inline void LtestFail(const char *expr, const char *file,
+                                   unsigned int line, const char *func) {
+  SchedCtxGuard guard;
+  throw TestFailure(FormatTestFailure(expr, file, line, func));
 }
 }  // namespace ltest
 

@@ -2,9 +2,10 @@
 
 #include <atomic>
 #include <cassert>
-#include <cstdlib>
+#include <cstdint>
+#include <new>
 #include <string>
-#include <unordered_set>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -24,17 +25,14 @@ bool ltest_initialized = false;
 
 namespace {
 std::atomic<std::uint64_t> g_dual_event_seqno{0};
-std::unordered_set<void*> fiber_stacks;
+std::unordered_map<void*, size_t> fiber_stacks;
 }  // namespace
 
 boost::context::stack_context context::AllocateFiberStack() {
   SchedCtxGuard guard;
   const size_t size = boost::context::stack_traits::default_size();
-  void* const memory = std::malloc(size);
-  if (memory == nullptr) {
-    throw std::bad_alloc();
-  }
-  fiber_stacks.insert(memory);
+  void* const memory = ::operator new(size);
+  fiber_stacks.emplace(memory, size);
   return {.size = size, .sp = static_cast<char*>(memory) + size};
 }
 
@@ -43,15 +41,25 @@ void context::DeallocateFiberStack(
   SchedCtxGuard guard;
   void* const memory = static_cast<char*>(context.sp) - context.size;
   fiber_stacks.erase(memory);
-  std::free(memory);
+  ::operator delete(memory);
 }
 
-void context::FreeForgottenFiberStacks() noexcept {
+void context::FreeAbandonedFiberStack(
+    boost::context::detail::fcontext_t fiber) noexcept {
+  if (fiber == nullptr) {
+    return;
+  }
+
   SchedCtxGuard guard;
-  std::unordered_set<void*> stacks;
-  stacks.swap(fiber_stacks);
-  for (void* stack : stacks) {
-    std::free(stack);
+  const auto address = reinterpret_cast<std::uintptr_t>(fiber);
+  for (auto it = fiber_stacks.begin(); it != fiber_stacks.end(); ++it) {
+    const auto base = reinterpret_cast<std::uintptr_t>(it->first);
+    if (base <= address && address < base + it->second) {
+      void* const stack = it->first;
+      fiber_stacks.erase(it);
+      ::operator delete(stack);
+      return;
+    }
   }
 }
 

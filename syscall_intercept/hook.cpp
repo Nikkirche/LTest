@@ -77,7 +77,16 @@ extern "C" {
 void __assert_fail(const char *assertion, const char *file, unsigned int line,
                    const char *function) {
   if (ltest::ltest_coro_ctx) {
-    return ltest::LtestFail(assertion, file, line, function);
+    {
+      ltest::SchedCtxGuard guard;
+      ltest::SetTestFailure(
+          ltest::FormatTestFailure(assertion, file, line, function));
+    }
+    CoroYield();
+    {
+      ltest::SchedCtxGuard guard;
+      assert("after triggered failed assert, the test should be finished");
+    }
   }
 
   static void (*real_assert)(const char *assertion, const char *file,

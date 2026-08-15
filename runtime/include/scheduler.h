@@ -290,6 +290,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
   }
 
   ~BaseStrategyWithThreads() override {
+    TerminateRunningTasks();
     CoroCtxGuard guard;
     (void)state.release();
   }
@@ -903,6 +904,10 @@ struct StrategyScheduler : public SchedulerWithReplay {
         histories = RunRound();
       }
 
+      if (HasTestFailure()) {
+        return std::nullopt;
+      }
+
       if (histories.has_value()) {
         auto& [full_history, sequential_history, reason] = histories.value();
         int threads_num = GetStrategyThreadsCount();
@@ -1004,6 +1009,9 @@ struct StrategyScheduler : public SchedulerWithReplay {
       }
 
       next_task->Resume(thread_id);
+      if (HasTestFailure()) {
+        return std::nullopt;
+      }
       strategy.UpdateSimulatorState(thread_id, sequential_history, full_history);
       if (next_task->IsReturned()) {
         ++finished_tasks;
@@ -1105,6 +1113,9 @@ struct StrategyScheduler : public SchedulerWithReplay {
         full_history.emplace_back(next_task);
 
         next_task->Resume(thread_id);
+        if (HasTestFailure()) {
+          return std::nullopt;
+        }
         if (next_task->IsReturned()) {
           --tasks_to_run;
           strategy.OnVerifierTaskFinish(next_task, thread_id);
@@ -1223,6 +1234,9 @@ struct StrategyScheduler : public SchedulerWithReplay {
         next_task->Terminate();
       } else {
         next_task->Resume(thread_id);
+        if (HasTestFailure()) {
+          return std::nullopt;
+        }
       }
 
       if (next_task->IsReturned()) {
