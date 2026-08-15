@@ -8,7 +8,7 @@ namespace spec {
 struct FireAndForgetOptionsOverride {
   static ltest::DefaultOptions GetOptions() {
     return {.threads = 1,
-            .tasks = 0,
+            .tasks = 100000000,
             .switches = 100000000,
             .rounds = 10000,
             .verbose = false,
@@ -41,19 +41,19 @@ class DummyChecker : public ModelChecker {
   bool Check(const std::vector<HistoryEvent> &) override { return true; }
 };
 extern "C" int ltest_main(int argc, char *argv[]) {
-  ltest::ltest_initialized = true;
+  ltest_initialized = true;
   spec::test_argc = argc;
   spec::test_argv = argv;
-  ltest::SetOpts(spec::FireAndForgetOptionsOverride::GetOptions());
-  ltest::Opts opts = ltest::ParseOpts();
+  SetOpts(spec::FireAndForgetOptionsOverride::GetOptions());
+  Opts opts = ParseOpts();
 
-  ltest::logger_init(opts.verbose);
+  logger_init(opts.verbose);
 
   PrettyPrinter pretty_printer;
   DummyChecker checker;
   auto scheduler = MakeScheduler<Test, OnlyOneTaskPerThreadVerifier>(
-      checker, opts, ltest::task_builders, {}, pretty_printer,  [](){return std::make_unique<Test>();});
+      checker, opts, task_builders, {}, pretty_printer,  [](){return std::make_unique<Test>();});
   std::cout << "\n\n";
   std::cout.flush();
-  return ltest::TrapRun(std::move(scheduler), pretty_printer);
+  return TrapRun(std::move(scheduler), pretty_printer);
 }

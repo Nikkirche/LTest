@@ -80,11 +80,23 @@ struct Overloads : Ts... {
 
 // we need to call this mutex method in almost each mutex function, because
 // mutex can be initialized by macros
-static decltype(mutexes)::mapped_type &InsertMutex(pthread_mutex_t *__mutex) {
-  // std::cerr << "inserted" << "\n";
+static decltype(mutexes)::mapped_type &InsertMutex(
+    pthread_mutex_t *__mutex, const pthread_mutexattr_t *__mutexattr = nullptr) {
   auto it = mutexes.find(__mutex);
   if (it == mutexes.end()) {
-    it = mutexes.emplace(__mutex, ltest::mutex()).first;
+    int type = PTHREAD_MUTEX_NORMAL;
+    if (__mutexattr != nullptr) {
+      const int result = pthread_mutexattr_gettype(__mutexattr, &type);
+      assert(result == 0);
+    } else {
+      type = __mutex->__data.__kind;
+    }
+    const bool is_recursive = type == PTHREAD_MUTEX_RECURSIVE_NP;
+    if (is_recursive) {
+      it = mutexes.emplace(__mutex, recursive_mutex()).first;
+    } else {
+      it = mutexes.emplace(__mutex, mutex()).first;
+    }
   }
   return it->second;
 }
@@ -101,6 +113,7 @@ static decltype(mutexes)::mapped_type &FindMutex(pthread_mutex_t *__mutex,
 extern int pthread_mutex_init(pthread_mutex_t *__mutex,
                               const pthread_mutexattr_t *__mutexattr) __THROW {
   PTHREAD_MOCK_INIT_ROUTINE(pthread_mutex_init, __mutex, __mutexattr)
+  InsertMutex(__mutex, __mutexattr);
   return 0;
 }
 
@@ -199,8 +212,7 @@ extern int pthread_cond_wait(pthread_cond_t *__restrict __cond,
   PTHREAD_MOCK_INIT_ROUTINE(pthread_cond_wait, __cond, __mutex)
   auto &m = InsertMutex(__mutex);
   auto &c = InsertCond(__cond);
-  // todo - allow other mutexes
-  c.wait(std::get<ltest::mutex>(m));
+  std::visit([&c](auto& mutex) { c.wait(mutex); }, m);
   return 0;
 }
 
@@ -246,7 +258,10 @@ extern int pthread_rwlock_rdlock(pthread_rwlock_t *__rwlock) {
 extern int pthread_rwlock_tryrdlock(pthread_rwlock_t *__rwlock) {
   PTHREAD_MOCK_INIT_ROUTINE(pthread_rwlock_tryrdlock, __rwlock)
   auto &it = InsertSharedLock(__rwlock);
-  throw std::runtime_error("not implemented");
+  return std::visit(Overloads{[](auto &a) {
+                      return a.try_lock_shared() ? 0 : EBUSY;
+                    }},
+                    it);
 }
 
 /* Acquire write lock for RWLOCK.  */
@@ -263,7 +278,11 @@ extern int pthread_rwlock_wrlock(pthread_rwlock_t *__rwlock) {
 /* Try to acquire write lock for RWLOCK.  */
 extern int pthread_rwlock_trywrlock(pthread_rwlock_t *__rwlock) {
   PTHREAD_MOCK_INIT_ROUTINE(pthread_rwlock_trywrlock, __rwlock)
-  throw std::runtime_error("not implemented");
+  auto &it = InsertSharedLock(__rwlock);
+  return std::visit(Overloads{[](auto &a) {
+                      return a.try_lock() ? 0 : EBUSY;
+                    }},
+                    it);
 }
 
 /* Unlock RWLOCK.  */

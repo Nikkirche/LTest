@@ -48,6 +48,55 @@ struct mutex {
   friend struct condition_variable;
 };
 
+struct recursive_mutex {
+  as_atomic void lock() {
+    if (owner_ == this_thread_id) {
+      ++depth_;
+      return;
+    }
+    while (owner_ != -1) {
+      CoroCtxGuard guard;
+      this_coro->SetBlocked(state());
+      CoroYield();
+    }
+    owner_ = this_thread_id;
+    depth_ = 1;
+  }
+
+  as_atomic bool try_lock() {
+    if (owner_ == this_thread_id) {
+      ++depth_;
+      return true;
+    }
+    if (owner_ != -1) {
+      CoroCtxGuard guard;
+      CoroYield();
+      return false;
+    }
+    owner_ = this_thread_id;
+    depth_ = 1;
+    return true;
+  }
+
+  as_atomic void unlock() {
+    assert(owner_ == this_thread_id);
+    if (--depth_ == 0) {
+      owner_ = -1;
+      block_manager.UnblockAllOn(addr());
+    }
+  }
+
+ private:
+  [[nodiscard]] std::intptr_t addr() const {
+    return reinterpret_cast<std::intptr_t>(&owner_);
+  }
+
+  [[nodiscard]] BlockState state() const { return {addr(), owner_}; }
+
+  int owner_{-1};
+  unsigned int depth_{0};
+};
+
 struct condition_variable {
   as_atomic void wait(std::unique_lock<ltest::mutex>& lock) {
     lock.unlock();
@@ -59,8 +108,9 @@ struct condition_variable {
     lock.lock();
   }
 
-  // is needed to match pthread api - there doesn't exists any std::unique_lock
-  as_atomic void wait(ltest::mutex& lock) {
+  // Is needed to match pthread API, which does not have std::unique_lock.
+  template <typename Mutex>
+  as_atomic void wait(Mutex& lock) {
     lock.unlock();
     this_coro->SetBlocked({addr(), 1});
     {
@@ -84,55 +134,6 @@ struct condition_variable {
 
 /**
  *
- * shared_mutex_r is a simple implementation:
- * locked = -1: exclusive lock
- * locked >= 0: number of separating locks
- *
- * Problem: writer starvation (writers can wait forever)
- *
- */
-struct shared_mutex_r {
-  as_atomic void lock() {
-    while (locked != 0) {
-      this_coro->SetBlocked(state());
-      {
-        CoroCtxGuard guard;
-        CoroYield();
-      }
-    }
-    locked = -1;
-  }
-  as_atomic void unlock() {
-    locked = 0;
-    block_manager.UnblockAllOn(addr());
-  }
-  as_atomic void lock_shared() {
-    while (locked == -1) {
-      this_coro->SetBlocked(state());
-      {
-        CoroCtxGuard guard;
-        CoroYield();
-      }
-    }
-    ++locked;
-  }
-  as_atomic void unlock_shared() {
-    --locked;
-    block_manager.UnblockAllOn(addr());
-  }
-
- private:
-  [[nodiscard]] std::intptr_t addr() const {
-    return reinterpret_cast<std::intptr_t>(&locked);
-  }
-
-  [[nodiscard]] BlockState state() const { return {addr(), locked}; }
-
-  int locked{0};
-};
-
-/**
- *
  * shared_mutex is an advanced implementation with queues:
  *
  * Uses two condition_variables:
@@ -151,6 +152,14 @@ struct shared_mutex {
     while (reader_count_ > 0) {
       no_readers_.wait(lock);
     }
+  }
+  as_atomic bool try_lock() {
+    std::unique_lock lock{mutex_, std::try_to_lock};
+    if (!lock.owns_lock() || has_write() || reader_count_ > 0) {
+      return false;
+    }
+    write_ = this_thread_id;
+    return true;
   }
   // in pthread api, unlock_shared calls under the hood unlock()
   as_atomic void unlock() {
@@ -174,6 +183,14 @@ struct shared_mutex {
     }
     ++reader_count_;
   }
+  as_atomic bool try_lock_shared() {
+    std::unique_lock lock{mutex_, std::try_to_lock};
+    if (!lock.owns_lock() || has_write()) {
+      return false;
+    }
+    ++reader_count_;
+    return true;
+  }
   as_atomic void unlock_shared() {
     unlock();
   }
@@ -190,7 +207,8 @@ struct shared_mutex {
 };
 
 inline std::pmr::monotonic_buffer_resource pthread_mock_resource(1000);
-inline std::pmr::unordered_map<pthread_mutex_t *, std::variant<mutex>>
+inline std::pmr::unordered_map<pthread_mutex_t *,
+                               std::variant<mutex, recursive_mutex>>
     mutexes(&pthread_mock_resource);
 inline std::pmr::unordered_map<pthread_rwlock_t *,
                                std::variant<shared_mutex>>
