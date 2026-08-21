@@ -108,6 +108,13 @@ struct RandomStrategy : PickStrategy<TargetObj, Verifier> {
     pick_weights.clear();
   }
 
+  void UpdateSimulatorState(size_t thread_id, Scheduler::SeqHistory& seq,
+                            FullHistoryWithThreads& full) override {
+    BaseStrategyWithThreads<TargetObj, Verifier>::UpdateSimulatorState(
+        thread_id, seq, full);
+    weights.resize(this->threads.size(), 1);
+  }
+
  private:
   std::vector<int> weights;
   std::vector<int> pick_weights;

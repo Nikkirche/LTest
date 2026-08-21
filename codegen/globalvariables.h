@@ -20,25 +20,19 @@ inline bool IsLtestGlobal(const llvm::GlobalValue& value) {
          demangled.find(" ltest::") != std::string::npos;
 }
 
-inline bool IsCxxAbiFunctionLocalStatic(const llvm::GlobalValue& value) {
-  auto name = value.getName();
-  // Itanium C++ ABI: _ZZ is function-local static storage, _ZGV is its guard.
-  // Resetting those would replay singleton initialization without modeling its
-  // process-lifetime side effects.
-  return name.starts_with("_ZZ") || name.starts_with("_ZGV");
-}
-
 struct GlobalReplacer {
   GlobalReplacer(llvm::Module& M) : M(M) {}
   void Run() {
     llvm::SmallVector<llvm::Constant*> entries;
+    llvm::SmallVector<llvm::Constant*> resettable_globals;
     auto pointer = llvm::PointerType::get(M.getContext(), 0);
+    auto size_type = llvm::Type::getInt64Ty(M.getContext());
+    auto descriptor_type = llvm::StructType::get(pointer, size_type);
     // first we init with init values, and only after it we call constructors
     for (auto& g : M.globals()) {
       bool ext = g.isExternallyInitialized();
       if (ext || g.isConstant() || g.hasAppendingLinkage() ||
-          !g.hasInitializer() || IsLtestGlobal(g) ||
-          IsCxxAbiFunctionLocalStatic(g)) {
+          !g.hasInitializer() || IsLtestGlobal(g)) {
         continue;
       }
       auto init = g.getInitializer();
@@ -53,6 +47,13 @@ struct GlobalReplacer {
       builder.CreateStore(init, &g);
       builder.CreateRetVoid();
       entries.push_back(llvm::ConstantExpr::getPointerCast(f, pointer));
+      if (!g.isThreadLocal()) {
+        const auto size = M.getDataLayout().getTypeAllocSize(g.getValueType());
+        resettable_globals.push_back(llvm::ConstantStruct::get(
+            descriptor_type,
+            {llvm::ConstantExpr::getPointerCast(&g, pointer),
+             llvm::ConstantInt::get(size_type, size.getFixedValue())}));
+      }
     }
     for (auto& f : M) {
       if (!f.isDeclaration() && f.getSection() == "text.start" &&
@@ -66,6 +67,17 @@ struct GlobalReplacer {
         llvm::ConstantArray::get(type, entries), "ltest_init_array");
     gv->setSection("ltest_init");
     appendToCompilerUsed(M, {gv});
+
+    if (!resettable_globals.empty()) {
+      auto resettable_type =
+          llvm::ArrayType::get(descriptor_type, resettable_globals.size());
+      auto resettable = new llvm::GlobalVariable(
+          M, resettable_type, true, llvm::GlobalValue::InternalLinkage,
+          llvm::ConstantArray::get(resettable_type, resettable_globals),
+          "ltest_resettable_global_storage");
+      resettable->setSection("ltest_resettable_globals");
+      appendToCompilerUsed(M, {resettable});
+    }
   }
   llvm::Module& M;
 };

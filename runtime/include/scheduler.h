@@ -676,6 +676,7 @@ struct BaseStrategyWithThreads : public Strategy, OSSimulator {
  private:
   void ResetTargetState() {
     CoroCtxGuard guard;
+    TargetConstructionGuard target_construction_guard;
     // Target objects are per-round mocks; abandoning them keeps destructor
     // side effects out of exploration reset.
     (void)state.release();

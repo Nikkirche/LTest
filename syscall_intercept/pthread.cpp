@@ -8,10 +8,20 @@
 #include "runtime/include/blocking_primitives.h"
 #include "runtime/include/coro_ctx_guard.h"
 #include "runtime/include/os_simulator.h"
+#include "runtime/include/pthread_key.h"
+#include "runtime/include/static_storage.h"
 using namespace ltest;
 
 [[nodiscard]] bool ShouldUseMock() {
   return ltest_initialized && ltest_coro_ctx;
+}
+
+template <class Function>
+Function GetRealPthreadFunction(const char* name) {
+  Function function = nullptr;
+  reinterpret_cast<void*&>(function) = dlsym(RTLD_NEXT, name);
+  assert(function);
+  return function;
 }
 
 #define PTHREAD_MOCK_INIT_ROUTINE(name, ...)                              \
@@ -71,6 +81,85 @@ extern void pthread_exit(void *__retval) __attribute__((__noreturn__)) {
       "code after CoroYield() here should never be executed, exception is "
       "thrown only to match "
       "noreturn attribute");
+}
+
+extern "C" int __cxa_thread_atexit(void (*)(void*), void*, void*) noexcept {
+  // LTest deliberately has no thread-local lifetime model.
+  return 0;
+}
+
+extern "C" int __cxa_thread_atexit_impl(void (*)(void*), void*, void*)
+    noexcept {
+  // LTest deliberately has no thread-local lifetime model.
+  return 0;
+}
+
+extern "C" int __cxa_atexit(void (*destructor)(void*), void* object,
+                              void* dso_handle) noexcept {
+  if (ltest::IsLtestResettableGlobalStorage(object)) {
+    return 0;
+  }
+  static decltype(&__cxa_atexit) real_fn =
+      GetRealPthreadFunction<decltype(&__cxa_atexit)>("__cxa_atexit");
+  return real_fn(destructor, object, dso_handle);
+}
+
+extern "C" int __register_atfork(void (*prepare)(), void (*parent)(),
+                                  void (*child)(), void* dso_handle) noexcept {
+  // fork() is not part of the simulated OS model. Registering a handler while
+  // target code is active would add target-owned storage to glibc's
+  // process-global at-fork list, which survives exploration resets.
+  if (ShouldUseMock()) {
+    return 0;
+  }
+  static decltype(&__register_atfork) real_fn =
+      GetRealPthreadFunction<decltype(&__register_atfork)>("__register_atfork");
+  return real_fn(prepare, parent, child, dso_handle);
+}
+
+extern int pthread_key_create(pthread_key_t* key,
+                              void (*destructor)(void*)) __THROW {
+  if (ltest::ShouldUseMockPthreadKeys()) {
+    return ltest::CreateMockPthreadKey(key);
+  }
+  static decltype(&pthread_key_create) real_fn =
+      GetRealPthreadFunction<decltype(&pthread_key_create)>("pthread_key_create");
+  const int result = real_fn(key, destructor);
+  if (result == 0) {
+    ltest::RegisterRealPthreadKey(*key);
+  }
+  return result;
+}
+
+extern int pthread_key_delete(pthread_key_t key) __THROW {
+  if (ltest::IsMockPthreadKey(key)) {
+    ltest::DeletePthreadKey(key);
+    return 0;
+  }
+  const int result = GetRealPthreadFunction<decltype(&pthread_key_delete)>(
+      "pthread_key_delete")(key);
+  if (result == 0) {
+    ltest::DeletePthreadKey(key);
+  }
+  return result;
+}
+
+extern void* pthread_getspecific(pthread_key_t key) __THROW {
+  if (!ltest::ShouldUseMockPthreadKeys()) {
+    return GetRealPthreadFunction<decltype(&pthread_getspecific)>(
+        "pthread_getspecific")(key);
+  }
+  ltest::SchedCtxGuard guard;
+  return ltest::GetPthreadKeyValue(key);
+}
+
+extern int pthread_setspecific(pthread_key_t key, const void* value) __THROW {
+  if (!ltest::ShouldUseMockPthreadKeys()) {
+    return GetRealPthreadFunction<decltype(&pthread_setspecific)>(
+        "pthread_setspecific")(key, value);
+  }
+  ltest::SchedCtxGuard guard;
+  return ltest::SetPthreadKeyValue(key, value);
 }
 
 template <class... Ts>

@@ -2,6 +2,7 @@
 
 #include "block_manager.h"
 #include "blocking_primitives.h"
+#include "pthread_key.h"
 
 namespace ltest {
 
@@ -41,6 +42,8 @@ void OSSimulator::ResetOSState() {
   cond_variables.clear();
   shared_mutexes.clear();
   block_manager.UnblockAll();
+  context::fiber_context::FreeForgottenStacks();
+  ResetPthreadKeyValues();
   memory_handler->FreeAllMemory();
   current_max_thread_id = 0;
   ResetStaticVariables();
@@ -51,8 +54,8 @@ bool OSSimulator::CanThreadContinue(std::size_t thread) {
   if (it != join_pairs.end()) {
     auto task = threads[it->second.first].back();
     if (task->IsReturned()) {
-      join_pairs.erase(it);
       auto retvalue = (it->second).second;
+      join_pairs.erase(it);
       if (retvalue != nullptr) {
         *retvalue = task->GetRetVal().GetValue<void*>();
       }

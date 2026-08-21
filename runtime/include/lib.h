@@ -165,6 +165,7 @@ struct Coro final : public CoroBase {
       std::function<std::vector<std::string>(std::shared_ptr<void>)>;
 
   std::shared_ptr<CoroBase> Restart(void* this_ptr) override {
+    SchedCtxGuard guard;
     assert(IsReturned());
     auto coro = New(func, this_ptr, args, args_to_strings, name, id);
 
@@ -241,6 +242,7 @@ struct TaskBuilder {
   const std::string& GetName() const { return name; }
 
   Task Build(void* this_ptr, size_t thread_id, int task_id) const {
+    SchedCtxGuard guard;
     return builder_func(this_ptr, thread_id, task_id);
   }
 

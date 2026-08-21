@@ -44,23 +44,16 @@ void context::DeallocateFiberStack(
   ::operator delete(memory);
 }
 
-void context::FreeAbandonedFiberStack(
-    boost::context::detail::fcontext_t fiber) noexcept {
-  if (fiber == nullptr) {
-    return;
-  }
-
+std::size_t context::FreeForgottenFiberStacks() noexcept {
   SchedCtxGuard guard;
-  const auto address = reinterpret_cast<std::uintptr_t>(fiber);
-  for (auto it = fiber_stacks.begin(); it != fiber_stacks.end(); ++it) {
-    const auto base = reinterpret_cast<std::uintptr_t>(it->first);
-    if (base <= address && address < base + it->second) {
-      void* const stack = it->first;
-      fiber_stacks.erase(it);
-      ::operator delete(stack);
-      return;
-    }
+  std::unordered_map<void*, size_t> forgotten_stacks;
+  forgotten_stacks.swap(fiber_stacks);
+  const std::size_t count = forgotten_stacks.size();
+  for (const auto& [memory, size] : forgotten_stacks) {
+    (void)size;
+    ::operator delete(memory);
   }
+  return count;
 }
 
 std::vector<TaskBuilder> task_builders{};
@@ -110,15 +103,16 @@ void CoroBase::Resume(size_t resumed_thread_id) {
   // NOTE(kmitkin): Guard below prevents us from call CoroYield in the scheduler
   // coroutine, area that protected by it should be as small as possible to
   // reduce errors
-  context::fiber_context(
-                      [coro](context::fiber_context&& ctx) {
-    sched_ctx = std::move(ctx);
-    {
-      CoroCtxGuard guard{};
-      coro->ctx = std::move(coro->ctx).resume();
-    }
-    return std::move(sched_ctx);
-  }).resume();
+  auto returned_context = context::fiber_context(
+      [coro](context::fiber_context&& ctx) {
+        sched_ctx = std::move(ctx);
+        {
+          CoroCtxGuard guard{};
+          coro->ctx = std::move(coro->ctx).resume();
+        }
+        return std::move(sched_ctx);
+      }).resume();
+  returned_context.forget();
   this_coro.reset();
   this_thread_id = -1;
 }
@@ -162,16 +156,17 @@ bool CoroBase::IsReturned() const { return returned; }
 }  // namespace ltest
 
 extern "C" void CoroYield() {
-  if (!ltest::ltest_coro_ctx) [[unlikely]] {
+  if (!ltest::ltest_coro_ctx || ltest::ltest_target_construction) [[unlikely]] {
     return;
   }
   assert(ltest::this_coro && ltest::sched_ctx);
   ltest::ltest_coro_ctx = false;
-  ltest::context::fiber_context(
-                      [](ltest::context::fiber_context&& ctx) {
-    ltest::this_coro->ctx = std::move(ctx);
-    return std::move(ltest::sched_ctx);
-  }).resume();
+  auto returned_context = ltest::context::fiber_context(
+      [](ltest::context::fiber_context&& ctx) {
+        ltest::this_coro->ctx = std::move(ctx);
+        return std::move(ltest::sched_ctx);
+      }).resume();
+  returned_context.forget();
   ltest::ltest_coro_ctx = true;
 }
 

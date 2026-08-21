@@ -33,13 +33,19 @@ inline std::string GetThreadResultToString(const ValueWrapper&) {
 class OSSimulator {
   MemoryHandler os_memory;
   std::unordered_map<uint64_t, std::pair<uint64_t, void**>> join_pairs;
+
  public:
   OSSimulator() { memory_handler = &os_memory; }
-  virtual ~OSSimulator(){ memory_handler->FreeAllMemory();}
+  virtual ~OSSimulator() {
+    context::fiber_context::FreeForgottenStacks();
+    memory_handler->FreeAllMemory();
+  }
   bool CanThreadContinue(std::size_t number);
-  void UpdateOSState(size_t thread, Scheduler::SeqHistory& seq, FullHistoryWithThreads& full);
+  void UpdateOSState(size_t thread, Scheduler::SeqHistory& seq,
+                     FullHistoryWithThreads& full);
   void ResetOSState();
-protected:
+
+ protected:
   std::vector<StableVector<Task>> threads;
 };
 

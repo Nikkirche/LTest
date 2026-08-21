@@ -9,6 +9,7 @@
 namespace ltest {
 
 bool ltest_coro_ctx = false;
+bool ltest_target_construction = false;
 
 CoroCtxGuard::CoroCtxGuard() { ltest_coro_ctx = true; }
 
@@ -20,5 +21,14 @@ SchedCtxGuard::SchedCtxGuard() {
 }
 
 SchedCtxGuard::~SchedCtxGuard() { ltest_coro_ctx = tmp; }
+
+TargetConstructionGuard::TargetConstructionGuard()
+    : previous(ltest_target_construction) {
+  ltest_target_construction = true;
+}
+
+TargetConstructionGuard::~TargetConstructionGuard() {
+  ltest_target_construction = previous;
+}
 
 }  // namespace ltest

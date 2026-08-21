@@ -46,6 +46,10 @@ struct FollyCoroMutexVerifierBase : ltest::DefaultStrategyTaskVerifier {
 
   void OnFinished(ltest::Task& task, size_t thread_id) {
     const std::string task_name = std::string(task->GetName());
+    const ltest::ValueWrapper result = task->GetRetVal();
+    if (!result.HasValue()) {
+      return;
+    }
 
     if (task_name == "lock") {
       // For dual lock(), ownership is acquired only after FOLLOWUP completes
@@ -57,7 +61,7 @@ struct FollyCoroMutexVerifierBase : ltest::DefaultStrategyTaskVerifier {
     }
 
     if (task_name == "try_lock") {
-      bool ok = task->GetRetVal().GetValue<bool>();
+      bool ok = result.GetValue<bool>();
       if (ok) {
         owner_thread_ = thread_id;
       }
@@ -76,6 +80,8 @@ struct FollyCoroMutexVerifierBase : ltest::DefaultStrategyTaskVerifier {
 
     assert(false && "unexpected finished method name in FollyCoroMutexVerifier");
   }
+
+  void Reset() { owner_thread_.reset(); }
 
  private:
   bool IsOwner(size_t thread_id) const {

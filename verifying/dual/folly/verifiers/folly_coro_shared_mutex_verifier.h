@@ -41,6 +41,10 @@ struct FollyCoroSharedMutexVerifierBase
   void OnFinished(ltest::Task& task, size_t thread_id) {
     EnsureThread(thread_id);
     const std::string task_name = std::string(task->GetName());
+    const ltest::ValueWrapper result = task->GetRetVal();
+    if (!result.HasValue()) {
+      return;
+    }
 
     if (task_name == "lock") {
       if (task->IsReturned()) {
@@ -50,7 +54,7 @@ struct FollyCoroSharedMutexVerifierBase
     }
 
     if (task_name == "try_lock") {
-      bool ok = task->GetRetVal().GetValue<bool>();
+      bool ok = result.GetValue<bool>();
       if (ok) {
         exclusive_owner_ = thread_id;
       }
@@ -65,7 +69,7 @@ struct FollyCoroSharedMutexVerifierBase
     }
 
     if (task_name == "try_lock_shared") {
-      bool ok = task->GetRetVal().GetValue<bool>();
+      bool ok = result.GetValue<bool>();
       if (ok) {
         ++shared_counts_[thread_id];
       }
@@ -88,6 +92,11 @@ struct FollyCoroSharedMutexVerifierBase
 
     assert(false && "unexpected finished method name in "
                     "FollyCoroSharedMutexVerifier");
+  }
+
+  void Reset() {
+    exclusive_owner_.reset();
+    shared_counts_.clear();
   }
 
  private:
