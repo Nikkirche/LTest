@@ -630,13 +630,17 @@ struct TargetDualMethod {
 
 }  // namespace ltest
 
-#define declare_task_name(symbol) \
-  static const char* symbol##_task_name = #symbol
+#define LTEST_REGISTRATION_GLOBAL \
+  __attribute__((section("ltest_registration_globals")))
+
+#define declare_task_name(symbol)                                      \
+  static const char* symbol##_task_name LTEST_REGISTRATION_GLOBAL = #symbol
 
 #define target_method(gen, ret, cls, symbol, ...)          \
   declare_task_name(symbol);                               \
-  ltest::TargetMethod<ret, cls __VA_OPT__(, ) __VA_ARGS__> \
-      symbol##_ltest_method_cls{symbol##_task_name, gen, &cls::symbol};
+  ltest::TargetMethod<ret, cls __VA_OPT__(, ) __VA_ARGS__>              \
+      symbol##_ltest_method_cls LTEST_REGISTRATION_GLOBAL{             \
+          symbol##_task_name, gen, &cls::symbol};
 
 #define stringify_detail(x) #x
 #define stringify(x) stringify_detail(x)
@@ -648,10 +652,12 @@ struct TargetDualMethod {
 
 #define target_method_async(gen, ret, cls, symbol, ...)              \
   declare_task_name(symbol);                                          \
-  ltest::TargetAwaitableMethod<ret, cls __VA_OPT__(, ) __VA_ARGS__>   \
-      symbol##_ltest_async_method_cls{symbol##_task_name, gen, &cls::symbol};
+  ltest::TargetAwaitableMethod<ret, cls __VA_OPT__(, ) __VA_ARGS__>     \
+      symbol##_ltest_async_method_cls LTEST_REGISTRATION_GLOBAL{       \
+          symbol##_task_name, gen, &cls::symbol};
 
 #define target_method_dual(gen, ret, cls, symbol, ...)         \
   declare_task_name(symbol);                                   \
-  ltest::TargetDualMethod<ret, cls __VA_OPT__(, ) __VA_ARGS__> \
-      symbol##_ltest_dual_method_cls{symbol##_task_name, gen, &cls::symbol};
+  ltest::TargetDualMethod<ret, cls __VA_OPT__(, ) __VA_ARGS__>          \
+      symbol##_ltest_dual_method_cls LTEST_REGISTRATION_GLOBAL{        \
+          symbol##_task_name, gen, &cls::symbol};

@@ -9,7 +9,6 @@
 #include "runtime/include/coro_ctx_guard.h"
 #include "runtime/include/os_simulator.h"
 #include "runtime/include/pthread_key.h"
-#include "runtime/include/static_storage.h"
 using namespace ltest;
 
 [[nodiscard]] bool ShouldUseMock() {
@@ -94,14 +93,10 @@ extern "C" int __cxa_thread_atexit_impl(void (*)(void*), void*, void*)
   return 0;
 }
 
-extern "C" int __cxa_atexit(void (*destructor)(void*), void* object,
-                              void* dso_handle) noexcept {
-  if (ltest::IsLtestResettableGlobalStorage(object)) {
-    return 0;
-  }
-  static decltype(&__cxa_atexit) real_fn =
-      GetRealPthreadFunction<decltype(&__cxa_atexit)>("__cxa_atexit");
-  return real_fn(destructor, object, dso_handle);
+extern "C" int __cxa_atexit(void (*)(void*), void*, void*) noexcept {
+  // LTest abandons target and runtime objects instead of running process-exit
+  // destructors against state that crossed simulated rounds.
+  return 0;
 }
 
 extern "C" int __register_atfork(void (*prepare)(), void (*parent)(),

@@ -6,6 +6,7 @@ extern bool ltest_coro_ctx;
 extern bool ltest_target_construction;
 
 struct CoroCtxGuard {
+  bool previous;
   CoroCtxGuard();
   ~CoroCtxGuard();
 };

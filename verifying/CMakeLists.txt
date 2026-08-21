@@ -7,6 +7,9 @@ set (PASS_PATH ${CMAKE_BINARY_DIR}/codegen/lib${PASS}.so)
 set(EXTERNAL_PASS YieldPassExternal)
 set(EXTERNAL_PASS_PATH ${CMAKE_BINARY_DIR}/codegen/lib${EXTERNAL_PASS}.so)
 
+set(GLOBALS_PASS GlobalVarsPass)
+set(GLOBALS_PASS_PATH ${CMAKE_BINARY_DIR}/codegen/lib${GLOBALS_PASS}.so)
+
 set(RESMOCK_PASS ResMockPass)
 set(RESMOCK_PASS_PATH ${CMAKE_BINARY_DIR}/codegen/lib${RESMOCK_PASS}.so)
 
@@ -67,6 +70,13 @@ function(verify_target target)
     target_compile_options(${target} PRIVATE -fpass-plugin=${PASS_PATH} ${CMAKE_ASAN_FLAGS})
 endfunction()
 
+function(verify_target_with_global_reset target)
+    verify_target_without_plugin(${target})
+    add_dependencies(${target} globalvars_plugin_pass)
+    target_compile_options(${target} PRIVATE
+            -fpass-plugin=${GLOBALS_PASS_PATH} ${CMAKE_ASAN_FLAGS})
+endfunction()
+
 function(verify_external_target target)
     verify_target_without_plugin(${target})
     add_dependencies(${target} runtime external_plugin_pass preload_with_main)
@@ -119,6 +129,7 @@ function(add_external_integration_test test_name label fail)
 endfunction()
 
 add_subdirectory(targets)
+#add_subdirectory(cpp-concurrent)
 add_subdirectory(dual)
 #add_subdirectory(sctbench/concurrent-software-benchmarks)
 add_subdirectory(blocking)

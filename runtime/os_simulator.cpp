@@ -2,6 +2,7 @@
 
 #include "block_manager.h"
 #include "blocking_primitives.h"
+#include "coro_ctx_guard.h"
 #include "pthread_key.h"
 
 namespace ltest {
@@ -16,8 +17,10 @@ __attribute__((weak)) extern void* __start_ltest_init[];
 __attribute__((weak)) extern void* __stop_ltest_init[];
 }
 
-// automatic reset of static vars make sense only in extern main mode
+namespace ltest {
+
 void ResetStaticVariables() {
+  CoroCtxGuard guard;
   for (auto p = __start_ltest_init; p != __stop_ltest_init; ++p) {
     auto fn = reinterpret_cast<void (*)()>(*p);
     //it can be padding, which should be ignored
@@ -27,7 +30,10 @@ void ResetStaticVariables() {
   }
 }
 
-namespace ltest {
+OSSimulator::OSSimulator() {
+  memory_handler = &os_memory;
+  ResetStaticVariables();
+}
 
 template <class... Ts>
 struct Overloads : Ts... {

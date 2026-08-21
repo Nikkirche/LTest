@@ -11,9 +11,11 @@ namespace ltest {
 bool ltest_coro_ctx = false;
 bool ltest_target_construction = false;
 
-CoroCtxGuard::CoroCtxGuard() { ltest_coro_ctx = true; }
+CoroCtxGuard::CoroCtxGuard() : previous(ltest_coro_ctx) {
+  ltest_coro_ctx = true;
+}
 
-CoroCtxGuard::~CoroCtxGuard() { ltest_coro_ctx = false; }
+CoroCtxGuard::~CoroCtxGuard() { ltest_coro_ctx = previous; }
 
 SchedCtxGuard::SchedCtxGuard() {
   tmp = ltest_coro_ctx;

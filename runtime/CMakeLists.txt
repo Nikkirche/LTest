@@ -8,6 +8,7 @@ set (SOURCE_FILES
         coro_ctx_guard.cpp
         os_simulator.cpp
         mock_res.cpp
+        pthread_key.cpp
 )
 
 add_library(runtime SHARED ${SOURCE_FILES})
