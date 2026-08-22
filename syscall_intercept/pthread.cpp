@@ -99,17 +99,16 @@ extern "C" int __cxa_atexit(void (*)(void*), void*, void*) noexcept {
   return 0;
 }
 
-extern "C" int __register_atfork(void (*prepare)(), void (*parent)(),
-                                  void (*child)(), void* dso_handle) noexcept {
-  // fork() is not part of the simulated OS model. Registering a handler while
-  // target code is active would add target-owned storage to glibc's
-  // process-global at-fork list, which survives exploration resets.
-  if (ShouldUseMock()) {
-    return 0;
-  }
-  static decltype(&__register_atfork) real_fn =
-      GetRealPthreadFunction<decltype(&__register_atfork)>("__register_atfork");
-  return real_fn(prepare, parent, child, dso_handle);
+extern "C" int pthread_atfork(void (*)(), void (*)(), void (*)()) noexcept {
+  // fork() is not part of the simulated OS model.
+  return 0;
+}
+
+extern "C" int __register_atfork(void (*)(), void (*)(), void (*)(),
+                                  void*) noexcept {
+  // glibc's pthread_atfork() delegates to this symbol. Interpose both entry
+  // points so no process-global handler survives across simulated rounds.
+  return 0;
 }
 
 extern int pthread_key_create(pthread_key_t* key,

@@ -26,7 +26,8 @@ struct JoinThreadInfo {
 extern uint64_t current_max_thread_id;
 extern std::optional<std::variant<CreatedThreadInfo, JoinThreadInfo>> thread_info;
 
-void ResetStaticVariables();
+void ResetStaticStorage();
+void RunStaticConstructors();
 
 inline std::string GetThreadResultToString(const ValueWrapper&) {
   return "Thread result";

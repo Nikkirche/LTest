@@ -1,10 +1,10 @@
 #pragma once
 
-#include <llvm/Demangle/Demangle.h>
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/SmallPtrSet.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Analysis/ValueTracking.h>
+#include <llvm/Demangle/Demangle.h>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Instructions.h>
@@ -43,13 +43,17 @@ struct GlobalReplacer {
 
   void Run() {
     auto* pointer = llvm::PointerType::get(module.getContext(), 0);
-    llvm::SmallVector<llvm::Constant*> entries;
+    llvm::SmallVector<llvm::Constant*> reset_entries;
+    llvm::SmallVector<llvm::Constant*> init_entries;
 
-    CreateGlobalResetters(pointer, entries);
-    ExtractGlobalConstructors(entries);
+    FindProcessLifetimeGlobals();
+    CreateGlobalResetters(pointer, reset_entries);
+    ExtractGlobalConstructors(init_entries);
     RemoveGlobalDestructors();
-    RemoveResettableAtExitRegistrations();
-    CreateResetArray(pointer, entries);
+    CreateFunctionArrays(pointer, reset_entries, "ltest_reset_array",
+                         "ltest_reset");
+    CreateFunctionArrays(pointer, init_entries, "ltest_init_array",
+                         "ltest_init");
   }
 
  private:
@@ -59,7 +63,8 @@ struct GlobalReplacer {
     for (auto& global : module.globals()) {
       if (global.isExternallyInitialized() || global.isConstant() ||
           global.hasAppendingLinkage() || !global.hasInitializer() ||
-          IsLtestGlobal(global)) {
+          IsLtestGlobal(global) ||
+          process_lifetime_globals.contains(&global)) {
         continue;
       }
 
@@ -76,8 +81,7 @@ struct GlobalReplacer {
       builder.CreateStore(global.getInitializer(), &global);
       builder.CreateRetVoid();
 
-      entries.push_back(
-          llvm::ConstantExpr::getPointerCast(resetter, pointer));
+      entries.push_back(llvm::ConstantExpr::getPointerCast(resetter, pointer));
       resettable_globals.insert(&global);
     }
   }
@@ -96,7 +100,9 @@ struct GlobalReplacer {
     return false;
   }
 
-  static bool IsProcessLifetimeInitializer(const llvm::Function& function) {
+  template <class Callback>
+  static void ForEachDirectCallee(const llvm::Function& function,
+                                  Callback callback) {
     for (const auto& block : function) {
       for (const auto& instruction : block) {
         auto* call = llvm::dyn_cast<llvm::CallBase>(&instruction);
@@ -105,16 +111,68 @@ struct GlobalReplacer {
         }
         auto* callee = llvm::dyn_cast<llvm::Function>(
             call->getCalledOperand()->stripPointerCasts());
-        if (callee == nullptr) {
-          continue;
-        }
-        const auto name = llvm::demangle(callee->getName().str());
-        if (name.rfind("google::FlagRegisterer::FlagRegisterer", 0) == 0) {
-          return true;
+        if (callee != nullptr) {
+          callback(*callee);
         }
       }
     }
-    return false;
+  }
+
+  static bool RegistersGflag(const llvm::Function& function) {
+    bool found = false;
+    ForEachDirectCallee(function, [&](const llvm::Function& callee) {
+      const auto name = llvm::demangle(callee.getName().str());
+      found |= name.rfind("google::FlagRegisterer::FlagRegisterer", 0) == 0;
+    });
+    return found;
+  }
+
+  bool AddProcessLifetimeGlobals(const llvm::Function& initializer) {
+    if (!RegistersGflag(initializer)) {
+      return false;
+    }
+    for (const auto& block : initializer) {
+      for (const auto& instruction : block) {
+        for (const llvm::Use& operand : instruction.operands()) {
+          if (auto* global = GetUnderlyingGlobal(operand.get())) {
+            process_lifetime_globals.insert(global);
+          }
+        }
+      }
+    }
+    return true;
+  }
+
+  void FindProcessLifetimeGlobals() {
+    auto* constructors = module.getNamedGlobal("llvm.global_ctors");
+    if (constructors == nullptr || !constructors->hasInitializer()) {
+      return;
+    }
+    auto* array = llvm::dyn_cast<llvm::ConstantArray>(
+        constructors->getInitializer());
+    if (array == nullptr) {
+      return;
+    }
+
+    for (llvm::Value* operand : array->operands()) {
+      auto* entry = llvm::cast<llvm::Constant>(operand);
+      auto* function = GetEntryFunction(entry);
+      if (function == nullptr) {
+        continue;
+      }
+
+      auto* object = GetEntryObject(entry);
+      if (object != nullptr || function->getSection() != ".text.startup") {
+        if (AddProcessLifetimeGlobals(*function) && object != nullptr) {
+          process_lifetime_globals.insert(object);
+        }
+        continue;
+      }
+
+      ForEachDirectCallee(*function, [&](const llvm::Function& initializer) {
+        AddProcessLifetimeGlobals(initializer);
+      });
+    }
   }
 
   static llvm::Function* GetEntryFunction(llvm::Constant* entry) {
@@ -136,8 +194,7 @@ struct GlobalReplacer {
   }
 
   template <class Callback>
-  bool ExtractResettableInitializerCalls(llvm::Function& wrapper,
-                                         Callback callback) {
+  void ExtractResettableCalls(llvm::Function& wrapper, Callback callback) {
     llvm::SmallVector<llvm::CallInst*> extracted_calls;
     for (auto& block : wrapper) {
       for (auto& instruction : block) {
@@ -148,7 +205,6 @@ struct GlobalReplacer {
         auto* callee = llvm::dyn_cast<llvm::Function>(
             call->getCalledOperand()->stripPointerCasts());
         if (callee == nullptr || callee == &wrapper ||
-            IsProcessLifetimeInitializer(*callee) ||
             !ReferencesResettableGlobal(*callee)) {
           continue;
         }
@@ -159,17 +215,16 @@ struct GlobalReplacer {
     for (auto* call : extracted_calls) {
       call->eraseFromParent();
     }
-    return !extracted_calls.empty();
   }
 
   void ExtractGlobalConstructors(
-      llvm::SmallVectorImpl<llvm::Constant*>& reset_entries) {
+      llvm::SmallVectorImpl<llvm::Constant*>& init_entries) {
     auto* constructors = module.getNamedGlobal("llvm.global_ctors");
     if (constructors == nullptr || !constructors->hasInitializer()) {
       return;
     }
-    auto* array = llvm::dyn_cast<llvm::ConstantArray>(
-        constructors->getInitializer());
+    auto* array =
+        llvm::dyn_cast<llvm::ConstantArray>(constructors->getInitializer());
     if (array == nullptr) {
       return;
     }
@@ -178,7 +233,7 @@ struct GlobalReplacer {
     llvm::SmallPtrSet<llvm::Function*, 16> added;
     auto add_constructor = [&](llvm::Function& function) {
       if (added.insert(&function).second) {
-        reset_entries.push_back(llvm::ConstantExpr::getPointerCast(
+        init_entries.push_back(llvm::ConstantExpr::getPointerCast(
             &function, llvm::PointerType::get(module.getContext(), 0)));
       }
     };
@@ -192,13 +247,15 @@ struct GlobalReplacer {
 
       if (function == nullptr) {
         kept.push_back(entry);
-      } else if (IsProcessLifetimeInitializer(*function)) {
+      } else if (associated_with_resettable) {
+        add_constructor(*function);
+      } else if (object == nullptr &&
+                 function->getSection() == ".text.startup") {
+        ExtractResettableCalls(*function, add_constructor);
         kept.push_back(entry);
-      } else if (associated_with_resettable ||
-                 ReferencesResettableGlobal(*function)) {
+      } else if (ReferencesResettableGlobal(*function)) {
         add_constructor(*function);
       } else {
-        ExtractResettableInitializerCalls(*function, add_constructor);
         kept.push_back(entry);
       }
     }
@@ -210,63 +267,9 @@ struct GlobalReplacer {
     if (destructors == nullptr || !destructors->hasInitializer()) {
       return;
     }
-    auto* array =
-        llvm::dyn_cast<llvm::ConstantArray>(destructors->getInitializer());
-    if (array == nullptr) {
-      return;
-    }
-
-    llvm::SmallVector<llvm::Constant*> kept;
-    for (llvm::Value* operand : array->operands()) {
-      auto* entry = llvm::cast<llvm::Constant>(operand);
-      auto* function = GetEntryFunction(entry);
-      auto* object = GetEntryObject(entry);
-      const bool associated_with_resettable =
-          object != nullptr && resettable_globals.contains(object);
-
-      if (function == nullptr) {
-        kept.push_back(entry);
-      } else if (associated_with_resettable ||
-                 ReferencesResettableGlobal(*function)) {
-        // Resettable target objects are abandoned rather than destructed.
-      } else {
-        ExtractResettableInitializerCalls(*function,
-                                          [](llvm::Function&) {});
-        kept.push_back(entry);
-      }
-    }
-    RebuildGlobalList(*destructors, kept);
-  }
-
-  void RemoveResettableAtExitRegistrations() {
-    llvm::SmallVector<llvm::CallInst*> registrations;
-    for (auto& function : module) {
-      for (auto& block : function) {
-        for (auto& instruction : block) {
-          auto* call = llvm::dyn_cast<llvm::CallInst>(&instruction);
-          if (call == nullptr || call->arg_size() < 2) {
-            continue;
-          }
-          auto* callee = llvm::dyn_cast<llvm::Function>(
-              call->getCalledOperand()->stripPointerCasts());
-          if (callee == nullptr || callee->getName() != "__cxa_atexit") {
-            continue;
-          }
-          auto* object = GetUnderlyingGlobal(call->getArgOperand(1));
-          if (object != nullptr && resettable_globals.contains(object)) {
-            registrations.push_back(call);
-          }
-        }
-      }
-    }
-
-    for (auto* registration : registrations) {
-      if (!registration->getType()->isVoidTy()) {
-        registration->replaceAllUsesWith(
-            llvm::Constant::getNullValue(registration->getType()));
-      }
-      registration->eraseFromParent();
-    }
+    // LTest abandons all process objects; preload applies the same policy to
+    // __cxa_atexit registrations.
+    RebuildGlobalList(*destructors, {});
   }
 
   void RebuildGlobalList(llvm::GlobalVariable& list,
@@ -278,7 +281,8 @@ struct GlobalReplacer {
 
     std::string name = list.getName().str();
     list.setName(name + ".old");
-    auto* type = llvm::ArrayType::get(old_array->getElementType(), entries.size());
+    auto* type =
+        llvm::ArrayType::get(old_array->getElementType(), entries.size());
     auto* replacement = new llvm::GlobalVariable(
         module, type, list.isConstant(), list.getLinkage(),
         llvm::ConstantArray::get(type, entries), name);
@@ -287,14 +291,15 @@ struct GlobalReplacer {
     list.eraseFromParent();
   }
 
-  void CreateResetArray(
+  void CreateFunctionArrays(
       llvm::PointerType* pointer,
-      const llvm::SmallVectorImpl<llvm::Constant*>& entries) {
+      const llvm::SmallVectorImpl<llvm::Constant*>& entries,
+      llvm::StringRef array_name, llvm::StringRef section_name) {
     llvm::SmallVector<llvm::Constant*> ungrouped;
     llvm::DenseMap<llvm::Comdat*, llvm::SmallVector<llvm::Constant*>> grouped;
     for (auto* entry : entries) {
-      auto* object = llvm::dyn_cast<llvm::GlobalObject>(
-          entry->stripPointerCasts());
+      auto* object =
+          llvm::dyn_cast<llvm::GlobalObject>(entry->stripPointerCasts());
       if (object != nullptr && object->hasComdat()) {
         grouped[object->getComdat()].push_back(entry);
       } else {
@@ -302,28 +307,32 @@ struct GlobalReplacer {
       }
     }
 
-    CreateResetArray(pointer, ungrouped, nullptr);
+    CreateFunctionArray(pointer, ungrouped, nullptr, array_name, section_name);
     for (auto& [comdat, group_entries] : grouped) {
-      CreateResetArray(pointer, group_entries, comdat);
+      CreateFunctionArray(pointer, group_entries, comdat, array_name,
+                          section_name);
     }
   }
 
-  void CreateResetArray(llvm::PointerType* pointer,
-                        llvm::ArrayRef<llvm::Constant*> entries,
-                        llvm::Comdat* comdat) {
+  void CreateFunctionArray(llvm::PointerType* pointer,
+                           llvm::ArrayRef<llvm::Constant*> entries,
+                           llvm::Comdat* comdat, llvm::StringRef array_name,
+                           llvm::StringRef section_name) {
     auto* type = llvm::ArrayType::get(pointer, entries.size());
-    auto* reset_array = new llvm::GlobalVariable(
+    auto* array = new llvm::GlobalVariable(
         module, type, true, llvm::GlobalValue::InternalLinkage,
-        llvm::ConstantArray::get(type, entries), "ltest_init_array");
-    reset_array->setSection("ltest_init");
+        llvm::ConstantArray::get(type, entries), array_name);
+    array->setSection(section_name);
     if (comdat != nullptr) {
-      reset_array->setComdat(comdat);
+      array->setComdat(comdat);
     }
-    llvm::appendToCompilerUsed(module, {reset_array});
+    llvm::appendToCompilerUsed(module, {array});
   }
 
   llvm::Module& module;
   llvm::SmallPtrSet<llvm::GlobalVariable*, 32> resettable_globals;
+  llvm::SmallPtrSet<const llvm::GlobalVariable*, 16>
+      process_lifetime_globals;
 };
 
 struct GlobalVarsPass final : public llvm::PassInfoMixin<GlobalVarsPass> {

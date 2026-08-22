@@ -13,26 +13,37 @@ uint64_t current_max_thread_id = 0;
 }  // namespace ltest
 
 extern "C" {
+__attribute__((weak)) extern void* __start_ltest_reset[];
+__attribute__((weak)) extern void* __stop_ltest_reset[];
 __attribute__((weak)) extern void* __start_ltest_init[];
 __attribute__((weak)) extern void* __stop_ltest_init[];
 }
 
 namespace ltest {
 
-void ResetStaticVariables() {
-  CoroCtxGuard guard;
-  for (auto p = __start_ltest_init; p != __stop_ltest_init; ++p) {
+void RunStaticFunctions(void** begin, void** end) {
+  for (auto p = begin; p != end; ++p) {
     auto fn = reinterpret_cast<void (*)()>(*p);
-    //it can be padding, which should be ignored
+    // It can be padding, which should be ignored.
     if (fn != nullptr) {
       fn();
     }
   }
 }
 
+void ResetStaticStorage() {
+  RunStaticFunctions(__start_ltest_reset, __stop_ltest_reset);
+}
+
+void RunStaticConstructors() {
+  CoroCtxGuard guard;
+  RunStaticFunctions(__start_ltest_init, __stop_ltest_init);
+}
+
 OSSimulator::OSSimulator() {
   memory_handler = &os_memory;
-  ResetStaticVariables();
+  ResetStaticStorage();
+  RunStaticConstructors();
 }
 
 template <class... Ts>
@@ -50,9 +61,10 @@ void OSSimulator::ResetOSState() {
   block_manager.UnblockAll();
   context::fiber_context::FreeForgottenStacks();
   ResetPthreadKeyValues();
+  ResetStaticStorage();
   memory_handler->FreeAllMemory();
   current_max_thread_id = 0;
-  ResetStaticVariables();
+  RunStaticConstructors();
   join_pairs.clear();
 }
 bool OSSimulator::CanThreadContinue(std::size_t thread) {
